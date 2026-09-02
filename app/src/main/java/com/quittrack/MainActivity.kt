@@ -264,6 +264,17 @@ fun QuitTrackApp(
     var cravingDialog by remember { mutableStateOf(false) }
     var reviewSaved by remember { mutableStateOf(false) }
 
+    BackHandler(enabled = screen != "Today" || smokeDialog || cravingDialog) {
+    when {
+        smokeDialog -> smokeDialog = false
+        cravingDialog -> cravingDialog = false
+        screen == "Entries" -> screen = "Today"
+        screen == "Emergency" -> screen = "Today"
+        screen == "DailyReviews" -> screen = "Stats"
+        else -> screen = "Today"
+    }
+}
+
     val midnight = Calendar.getInstance().apply {
         set(Calendar.HOUR_OF_DAY, 0)
         set(Calendar.MINUTE, 0)
