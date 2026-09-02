@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -454,7 +455,12 @@ fun QuitTrackApp(
                     onSmoke = { smokeDialog = true },
                     onCraving = { cravingDialog = true },
                     onEntries = { screen = "Entries" },
-                    onPlan = { screen = "Plan" },
+                    onPlan = {
+    selectedPhase = planPhases.firstOrNull {
+        day in it.dayStart..it.dayEnd
+    }
+    screen = "Plan"
+},
                     onEmergency = { screen = "Emergency" },
                     onSaveReview = {
     val todayEntries = entries.filter {
@@ -479,6 +485,7 @@ fun QuitTrackApp(
                 "Plan" -> PlanScreen(
     Modifier.padding(pad),
     day,
+    selectedPhase,
     onPhaseClick = { phase ->
     selectedPhase = phase
     screen = "PhaseDetail"
@@ -912,9 +919,20 @@ fun ActionCard(
 fun PlanScreen(
     m: Modifier,
     currentDay: Int,
+    selectedPhase: PlanPhase? = null,
     onPhaseClick: (PlanPhase) -> Unit
 ) {
+    val listState = rememberLazyListState()
+    LaunchedEffect(selectedPhase) {
+    selectedPhase?.let { phase ->
+        val index = planPhases.indexOf(phase)
+        if (index >= 0) {
+            listState.animateScrollToItem(index + 2)
+        }
+    }
+}
     LazyColumn(
+        state = listState,
         modifier = m.fillMaxSize(),
         contentPadding = PaddingValues(
             start = 20.dp,
