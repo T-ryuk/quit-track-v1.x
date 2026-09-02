@@ -484,13 +484,23 @@ fun QuitTrackApp(
     screen = "PhaseDetail"
 }
 )
-                "PhaseDetail" -> selectedPhase?.let { phase ->
+               "PhaseDetail" -> selectedPhase?.let { phase ->
     PhaseDetailScreen(
         Modifier.padding(pad),
         phase = phase,
         onBack = {
             selectedPhase = null
             screen = "Plan"
+        },
+        onAction = {
+            when (phase.phase) {
+                1 -> screen = "Today"
+                2 -> screen = "Today"
+                3 -> screen = "Emergency"
+                4 -> screen = "Emergency"
+                5 -> screen = "Emergency"
+                6 -> screen = "Stats"
+            }
         }
     )
 }
@@ -2280,7 +2290,8 @@ fun DailyReviewsScreen(
 fun PhaseDetailScreen(
     m: Modifier,
     phase: PlanPhase,
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    onAction: () -> Unit
 ) {
     LazyColumn(
         modifier = m.fillMaxSize(),
@@ -2374,7 +2385,7 @@ fun PhaseDetailScreen(
 
         item {
             Button(
-                onClick = { },
+                onClick = onAction,
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(56.dp),
