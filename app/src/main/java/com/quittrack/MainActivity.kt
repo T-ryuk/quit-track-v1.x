@@ -923,12 +923,13 @@ fun PlanScreen(
     onPhaseClick: (PlanPhase) -> Unit
 ) {
     val listState = rememberLazyListState()
-    LaunchedEffect(selectedPhase) {
-    selectedPhase?.let { phase ->
-        val index = planPhases.indexOf(phase)
-        if (index >= 0) {
-            listState.animateScrollToItem(index + 2)
-        }
+    LaunchedEffect(currentDay) {
+    val index = planPhases.indexOfFirst {
+        currentDay in it.dayStart..it.dayEnd
+    }
+
+    if (index >= 0) {
+        listState.animateScrollToItem(index + 2)
     }
 }
     LazyColumn(
