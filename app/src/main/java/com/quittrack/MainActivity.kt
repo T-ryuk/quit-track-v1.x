@@ -680,7 +680,9 @@ fun TodayScreen(
         }
 
         item {
-            AppCard {
+            AppCard(
+    modifier = Modifier.clickable { onPlan() }
+) {
                 Column(
                     modifier = Modifier.padding(18.dp),
                     verticalArrangement = Arrangement.spacedBy(14.dp)
