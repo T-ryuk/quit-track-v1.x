@@ -372,6 +372,7 @@ fun QuitTrackApp(
     var entries by remember { mutableStateOf(loadEntries()) }
     var dailyReviews by remember { mutableStateOf(loadDailyReviews()) }
     var screen by remember { mutableStateOf("Today") }
+    var selectedPhase by remember { mutableStateOf<PlanPhase?>(null) }
     var smokeDialog by remember { mutableStateOf(false) }
     var cravingDialog by remember { mutableStateOf(false) }
     var reviewSaved by remember { mutableStateOf(false) }
@@ -476,9 +477,23 @@ fun QuitTrackApp(
                 )
 
                 "Plan" -> PlanScreen(
-                    Modifier.padding(pad),
-                    day
-                )
+    Modifier.padding(pad),
+    day,
+    onPhaseClick = { phase ->
+    selectedPhase = phase
+    screen = "PhaseDetail"
+}
+)
+                "PhaseDetail" -> selectedPhase?.let { phase ->
+    PhaseDetailScreen(
+        Modifier.padding(pad),
+        phase = phase,
+        onBack = {
+            selectedPhase = null
+            screen = "Plan"
+        }
+    )
+}
 
                 "Stats" -> StatsScreen(
                     Modifier.padding(pad),
@@ -884,7 +899,8 @@ fun ActionCard(
 @Composable
 fun PlanScreen(
     m: Modifier,
-    currentDay: Int
+    currentDay: Int,
+    onPhaseClick: (PlanPhase) -> Unit
 ) {
     LazyColumn(
         modifier = m.fillMaxSize(),
@@ -924,7 +940,11 @@ fun PlanScreen(
             val current = currentDay in phase.dayStart..phase.dayEnd
             val completed = currentDay > phase.dayEnd
 
-            AppCard {
+            AppCard(
+    modifier = Modifier.clickable {
+        onPhaseClick(phase)
+    }
+) {
                 Row(
                     modifier = Modifier.padding(16.dp),
                     verticalAlignment = Alignment.CenterVertically
@@ -2253,6 +2273,119 @@ fun DailyReviewsScreen(
         }
     }
 }
+    }
+}
+
+@Composable
+fun PhaseDetailScreen(
+    m: Modifier,
+    phase: PlanPhase,
+    onBack: () -> Unit
+) {
+    LazyColumn(
+        modifier = m.fillMaxSize(),
+        contentPadding = PaddingValues(
+            start = 20.dp,
+            end = 20.dp,
+            top = 24.dp,
+            bottom = 24.dp
+        ),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+
+        item {
+            TextButton(onClick = onBack) {
+                Text("‹ Back")
+            }
+        }
+
+        item {
+            Text(
+                "Phase ${phase.phase} • ${phase.name}",
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.Bold,
+                color = QuitGreen
+            )
+
+            Text(
+                if (phase.dayStart == phase.dayEnd)
+                    "Day ${phase.dayStart}"
+                else
+                    "Day ${phase.dayStart} to Day ${phase.dayEnd}",
+                fontWeight = FontWeight.Bold
+            )
+        }
+
+        item {
+            AppCard {
+                Column(
+                    modifier = Modifier.padding(18.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text(
+                        "About this phase",
+                        fontWeight = FontWeight.Bold
+                    )
+
+                    Text(
+                        phase.description,
+                        color = TextMuted
+                    )
+                }
+            }
+        }
+
+        item {
+            AppCard {
+                Column(
+                    modifier = Modifier.padding(18.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text(
+                        "What to focus on",
+                        fontWeight = FontWeight.Bold
+                    )
+
+                    phase.focus.forEach { item ->
+                        Text("• $item")
+                    }
+                }
+            }
+        }
+
+        item {
+            AppCard {
+                Column(
+                    modifier = Modifier.padding(18.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text(
+                        "Today's focus",
+                        fontWeight = FontWeight.Bold
+                    )
+
+                    Text(
+                        phase.todaysFocus,
+                        color = TextMuted
+                    )
+                }
+            }
+        }
+
+        item {
+            Button(
+                onClick = { },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(56.dp),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Text(
+                    phase.action,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        }
     }
 }
 }
