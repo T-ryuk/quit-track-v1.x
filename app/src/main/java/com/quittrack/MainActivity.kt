@@ -32,6 +32,7 @@ import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.*
 import androidx.compose.ui.text.font.FontFamily
+import androidx.activity.compose.BackHandler
 
 data class LogEntry(
     val type: String,
