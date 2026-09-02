@@ -563,11 +563,6 @@ fun TodayScreen(
         }
     }
 
-    Text(
-        "▣",
-        fontSize = 28.sp,
-        color = QuitGreen
-    )
 }
 
                     Row(
