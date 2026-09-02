@@ -886,8 +886,6 @@ fun PlanScreen(
     m: Modifier,
     currentDay: Int
 ) {
-    val days = (1..40).toList()
-
     LazyColumn(
         modifier = m.fillMaxSize(),
         contentPadding = PaddingValues(
@@ -896,7 +894,7 @@ fun PlanScreen(
             top = 24.dp,
             bottom = 24.dp
         ),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
+        verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
 
         item {
@@ -921,14 +919,14 @@ fun PlanScreen(
             )
         }
 
-        itemsIndexed(days) { index, day ->
+        items(planPhases) { phase ->
 
-            val completed = day < currentDay
-            val current = day == currentDay
+            val current = currentDay in phase.dayStart..phase.dayEnd
+            val completed = currentDay > phase.dayEnd
 
             AppCard {
                 Row(
-                    modifier = Modifier.padding(14.dp),
+                    modifier = Modifier.padding(16.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
 
@@ -946,10 +944,13 @@ fun PlanScreen(
                         contentAlignment = Alignment.Center
                     ) {
                         Text(
-                            if (completed) "✓" else day.toString(),
+                            if (completed) "✓"
+                            else phase.phase.toString(),
                             fontWeight = FontWeight.Bold,
-                            color = if (completed) androidx.compose.ui.graphics.Color.White
-                            else QuitGreen
+                            color = if (completed)
+                                androidx.compose.ui.graphics.Color.White
+                            else
+                                QuitGreen
                         )
                     }
 
@@ -958,13 +959,17 @@ fun PlanScreen(
                     Column(
                         modifier = Modifier.weight(1f)
                     ) {
+
                         Text(
-                            "Day $day",
+                            "Phase ${phase.phase} • ${phase.name}",
                             fontWeight = FontWeight.Bold
                         )
 
                         Text(
-                            planTitle(day),
+                            if (phase.dayStart == phase.dayEnd)
+                                "Day ${phase.dayStart}"
+                            else
+                                "Day ${phase.dayStart} to Day ${phase.dayEnd}",
                             fontWeight = if (current)
                                 FontWeight.Bold
                             else
@@ -972,7 +977,7 @@ fun PlanScreen(
                         )
 
                         Text(
-                            planSubtitle(day),
+                            phase.description,
                             color = TextMuted,
                             style = MaterialTheme.typography.bodySmall
                         )
