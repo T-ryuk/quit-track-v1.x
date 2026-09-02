@@ -48,6 +48,118 @@ data class DailyReview(
     val entries: List<LogEntry>
 )
 
+data class PlanPhase(
+    val phase: Int,
+    val name: String,
+    val dayStart: Int,
+    val dayEnd: Int,
+    val description: String,
+    val focus: List<String>,
+    val todaysFocus: String,
+    val action: String
+)
+
+private val planPhases = listOf(
+    PlanPhase(
+        phase = 1,
+        name = "Foundation",
+        dayStart = 1,
+        dayEnd = 1,
+        description = "Start by understanding your current smoking pattern without trying to change everything at once.",
+        focus = listOf(
+            "Log every cigarette you smoke.",
+            "Mark which cigarettes are morning cigarettes.",
+            "Record cravings when they happen.",
+            "Notice when, where, and why you smoke."
+        ),
+        todaysFocus = "Observe, don't judge.",
+        action = "Start today's tracking"
+    ),
+
+    PlanPhase(
+        phase = 2,
+        name = "Preparation",
+        dayStart = 2,
+        dayEnd = 2,
+        description = "Identify the situations and routines that make smoking feel automatic.",
+        focus = listOf(
+            "Review your smoking pattern.",
+            "Identify your strongest triggers.",
+            "Notice routines connected to smoking.",
+            "Think about difficult situations ahead."
+        ),
+        todaysFocus = "Know your triggers before they surprise you.",
+        action = "Review your triggers"
+    ),
+
+    PlanPhase(
+        phase = 3,
+        name = "Strengthening",
+        dayStart = 3,
+        dayEnd = 3,
+        description = "Start practicing ways to handle cravings without immediately reaching for a cigarette.",
+        focus = listOf(
+            "Practice delaying a cigarette.",
+            "Use the emergency craving tools.",
+            "Notice how cravings change over time.",
+            "Record what helps."
+        ),
+        todaysFocus = "A craving is something you can work through, not an order you have to obey.",
+        action = "Practice a craving strategy"
+    ),
+
+    PlanPhase(
+        phase = 4,
+        name = "Building skills",
+        dayStart = 4,
+        dayEnd = 36,
+        description = "Build and repeat the skills you'll need to become smoke-free.",
+        focus = listOf(
+            "Manage cravings.",
+            "Delay cigarettes.",
+            "Recognize and avoid triggers.",
+            "Change smoking routines.",
+            "Handle difficult situations.",
+            "Increase control over smoking decisions."
+        ),
+        todaysFocus = "Practice today's skill and keep working toward your quit day.",
+        action = "Start today's exercise"
+    ),
+
+    PlanPhase(
+        phase = 5,
+        name = "Quit day",
+        dayStart = 37,
+        dayEnd = 37,
+        description = "Today is the transition to being smoke-free.",
+        focus = listOf(
+            "Don't smoke.",
+            "Expect cravings and use the skills you've practiced.",
+            "Take each craving one at a time.",
+            "Use Emergency craving help when needed.",
+            "Record difficult moments and what helped."
+        ),
+        todaysFocus = "You don't need to get through forever today. You only need to get through today.",
+        action = "Start your smoke-free day"
+    ),
+
+    PlanPhase(
+        phase = 6,
+        name = "Smoke-free maintenance",
+        dayStart = 38,
+        dayEnd = 40,
+        description = "Strengthen your smoke-free routine and prepare to maintain it after the 40-day program.",
+        focus = listOf(
+            "Keep tracking cravings and difficult situations.",
+            "Identify any remaining triggers.",
+            "Reinforce the strategies that worked best.",
+            "Prepare for future high-risk situations."
+        ),
+        todaysFocus = "Protect what you've built.",
+        action = "Review your progress"
+    )
+)
+
 private val QuitGreen = androidx.compose.ui.graphics.Color(0xFF850707)
 private val QuitGreenDark = androidx.compose.ui.graphics.Color(0xFF850707)
 private val QuitGreenLight = androidx.compose.ui.graphics.Color(0xFF121111)
