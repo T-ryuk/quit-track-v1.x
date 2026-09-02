@@ -459,7 +459,7 @@ fun QuitTrackApp(
     selectedPhase = planPhases.firstOrNull {
         day in it.dayStart..it.dayEnd
     }
-    screen = "Plan"
+    screen = "PhaseDetail"
 },
                     onEmergency = { screen = "Emergency" },
                     onSaveReview = {
