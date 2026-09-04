@@ -647,6 +647,7 @@ fun TodayScreen(
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
 
+        // Header
         item {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -669,6 +670,7 @@ fun TodayScreen(
             }
         }
 
+        // Greeting
         item {
             Column(
                 verticalArrangement = Arrangement.spacedBy(4.dp)
@@ -680,60 +682,49 @@ fun TodayScreen(
                 )
 
                 Text(
-                    "You've got this. One day at a time.",
+                    "One day at a time.",
                     color = TextMuted
                 )
             }
         }
 
+        // Main day/status card
         item {
             AppCard(
-    modifier = Modifier.clickable { onPlan() }
-) {
+                modifier = Modifier.clickable { onPlan() }
+            ) {
                 Column(
-                    modifier = Modifier.padding(18.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(20.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
 
-                    Row(
-    modifier = Modifier.fillMaxWidth(),
-    verticalAlignment = Alignment.CenterVertically
-) {
-    Box(
-        modifier = Modifier.weight(1f),
-        contentAlignment = Alignment.Center
-    ) {
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            Text(
-                "Day $day of 40",
-                style = MaterialTheme.typography.headlineSmall,
-                fontWeight = FontWeight.Bold,
-                textAlign = TextAlign.Center
-            )
+                    Text(
+                        "DAY $day OF 40",
+                        style = MaterialTheme.typography.headlineMedium,
+                        fontWeight = FontWeight.Bold,
+                        textAlign = TextAlign.Center
+                    )
 
-            Text(
-                "Phase ${phaseForDay(day)} • ${phaseName(day)}",
-                color = TextMuted,
-                textAlign = TextAlign.Center
-            )
-        }
-    }
+                    Text(
+                        "Phase ${phaseForDay(day)} • ${phaseName(day)}",
+                        color = TextMuted,
+                        textAlign = TextAlign.Center
+                    )
 
-}
+                    HorizontalDivider(
+                        color = BorderLight
+                    )
 
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
+                        horizontalArrangement = Arrangement.SpaceEvenly
                     ) {
-                        Column {
-                            Text(
-                                "CIGARETTES TODAY",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = TextMuted
-                            )
-
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
                             Text(
                                 smoked.toString(),
                                 style = MaterialTheme.typography.headlineMedium,
@@ -741,20 +732,15 @@ fun TodayScreen(
                             )
 
                             Text(
-                                "cigarettes",
-                                color = TextMuted
+                                "Cigarettes today",
+                                color = TextMuted,
+                                style = MaterialTheme.typography.bodySmall
                             )
                         }
 
                         Column(
-                            horizontalAlignment = Alignment.End
+                            horizontalAlignment = Alignment.CenterHorizontally
                         ) {
-                            Text(
-                                "MORNING",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = TextMuted
-                            )
-
                             Text(
                                 morning.toString(),
                                 style = MaterialTheme.typography.headlineMedium,
@@ -762,8 +748,9 @@ fun TodayScreen(
                             )
 
                             Text(
-                                "cigarettes",
-                                color = TextMuted
+                                "Morning cigarettes",
+                                color = TextMuted,
+                                style = MaterialTheme.typography.bodySmall
                             )
                         }
                     }
@@ -771,6 +758,65 @@ fun TodayScreen(
             }
         }
 
+        // Primary logging actions
+        item {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Button(
+                    onClick = onSmoke,
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(82.dp),
+                    shape = RoundedCornerShape(18.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = QuitGreen
+                    )
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text(
+                            "＋",
+                            fontSize = 25.sp
+                        )
+
+                        Text(
+                            "Log a cigarette",
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+
+                Button(
+                    onClick = onCraving,
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(82.dp),
+                    shape = RoundedCornerShape(18.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = QuitOrange
+                    )
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text(
+                            "🔥",
+                            fontSize = 23.sp
+                        )
+
+                        Text(
+                            "I have a craving",
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            }
+        }
+
+        // Save review
         item {
             Button(
                 onClick = onSaveReview,
@@ -783,64 +829,16 @@ fun TodayScreen(
                 )
             ) {
                 Text(
-    if (reviewSaved)
-        "✓  Today's review saved"
-    else
-        "✓  Save today's review",
-    fontWeight = FontWeight.Bold
-)
+                    if (reviewSaved)
+                        "✓  Today's review saved"
+                    else
+                        "✓  Save today's review",
+                    fontWeight = FontWeight.Bold
+                )
             }
         }
 
-        item {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                Button(
-                    onClick = onSmoke,
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(74.dp),
-                    shape = RoundedCornerShape(18.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = QuitGreen
-                    )
-                ) {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        Text(
-                            "＋",
-                            fontSize = 24.sp
-                        )
-                        Text("Log a cigarette")
-                    }
-                }
-
-                Button(
-                    onClick = onCraving,
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(74.dp),
-                    shape = RoundedCornerShape(18.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = QuitOrange
-                    )
-                ) {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        Text(
-                            "🔥",
-                            fontSize = 22.sp
-                        )
-                        Text("I have a craving")
-                    }
-                }
-            }
-        }
-
+        // Secondary actions
         item {
             ActionCard(
                 title = "Today's plan",
@@ -2090,9 +2088,9 @@ Card(
     ) {
         Text(
     if (context.isEmpty())
-        "Context ▼"
+        "Context"
     else
-        "$context ▼",
+        "$context",
     textAlign = TextAlign.Center
 )
     }
@@ -2285,7 +2283,7 @@ Card(
     ) {
         Text(
             if (context.isEmpty())
-                "Context ▼"
+                "Context"
             else
                 context
         )
