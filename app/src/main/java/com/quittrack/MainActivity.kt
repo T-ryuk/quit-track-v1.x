@@ -1,8 +1,15 @@
 package com.quittrack
 
+import android.app.AlarmManager
+import android.app.PendingIntent
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -23,17 +30,16 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.platform.LocalContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.*
-import androidx.compose.ui.text.font.FontFamily
-import androidx.activity.compose.BackHandler
 
 data class LogEntry(
     val type: String,
@@ -173,33 +179,462 @@ private val TextMuted = androidx.compose.ui.graphics.Color(0xFFE6E7E8)
 private val BorderLight = androidx.compose.ui.graphics.Color(0xFF121111)
 private val SystemFontFamily = androidx.compose.ui.text.font.FontFamily.SansSerif
 
+
+/* ============================================================
+   DAILY REVIEW ALARM SYSTEM
+   ============================================================ */
+
+private const val REVIEW_ALARM_REQUEST_CODE = 159
+private const val PREFS_NAME = "quit_track"
+private const val MANUAL_REVIEW_SAVED_DATE = "manualReviewSavedDate"
+
+
+/*
+ * Returns today's date at midnight.
+ */
+private fun todayMidnight(): Long {
+    return Calendar.getInstance().apply {
+        set(Calendar.HOUR_OF_DAY, 0)
+        set(Calendar.MINUTE, 0)
+        set(Calendar.SECOND, 0)
+        set(Calendar.MILLISECOND, 0)
+    }.timeInMillis
+}
+
+
+/*
+ * Returns a Calendar representing a specific date at 23:59:00.
+ */
+private fun reviewAlarmTime(
+    daysFromToday: Int = 0
+): Calendar {
+    return Calendar.getInstance().apply {
+        set(Calendar.HOUR_OF_DAY, 23)
+        set(Calendar.MINUTE, 59)
+        set(Calendar.SECOND, 0)
+        set(Calendar.MILLISECOND, 0)
+
+        if (daysFromToday != 0) {
+            add(Calendar.DAY_OF_YEAR, daysFromToday)
+        }
+    }
+}
+
+
+/*
+ * Creates the PendingIntent used by the daily review alarm.
+ */
+private fun dailyReviewPendingIntent(
+    context: Context
+): PendingIntent {
+
+    val intent = Intent(
+        context,
+        DailyReviewAlarmReceiver::class.java
+    )
+
+    return PendingIntent.getBroadcast(
+        context,
+        REVIEW_ALARM_REQUEST_CODE,
+        intent,
+        PendingIntent.FLAG_UPDATE_CURRENT or
+                PendingIntent.FLAG_IMMUTABLE
+    )
+}
+
+
+/*
+ * Cancels the current daily review alarm.
+ */
+fun cancelDailyReviewAlarm(
+    context: Context
+) {
+    val alarmManager =
+        context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+
+    alarmManager.cancel(
+        dailyReviewPendingIntent(context)
+    )
+}
+
+
+/*
+ * Schedules the next daily review alarm.
+
+ * RULE:
+ *
+ * If today's review has already been manually saved,
+ * schedule tomorrow at 23:59.
+ *
+ * Otherwise:
+ *   - if today's 23:59 has not happened yet,
+ *     schedule today at 23:59.
+ *   - otherwise schedule tomorrow at 23:59.
+ */
+fun scheduleDailyReview(
+    context: Context
+) {
+    val alarmManager =
+        context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+
+    val prefs = context.getSharedPreferences(
+        PREFS_NAME,
+        Context.MODE_PRIVATE
+    )
+
+    val today = fmtDate(todayMidnight())
+
+    val manualSavedDate =
+        prefs.getString(
+            MANUAL_REVIEW_SAVED_DATE,
+            ""
+        ) ?: ""
+
+    val now = System.currentTimeMillis()
+
+    val alarmCalendar: Calendar
+
+    if (manualSavedDate == today) {
+
+        /*
+         * Today's review was manually saved.
+         * Therefore there must NOT be another automatic
+         * save tonight.
+         *
+         * Schedule tomorrow instead.
+         */
+        alarmCalendar = reviewAlarmTime(1)
+
+    } else {
+
+        /*
+         * No manual save for today.
+         *
+         * Schedule today's 23:59 if it is still in the future.
+         * Otherwise schedule tomorrow.
+         */
+        val todayAlarm = reviewAlarmTime(0)
+
+        alarmCalendar =
+            if (todayAlarm.timeInMillis > now) {
+                todayAlarm
+            } else {
+                reviewAlarmTime(1)
+            }
+    }
+
+    val pendingIntent =
+        dailyReviewPendingIntent(context)
+
+    /*
+     * Cancel first so that an old alarm can never remain
+     * alongside the new one.
+     */
+    alarmManager.cancel(pendingIntent)
+
+    if (
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+        !alarmManager.canScheduleExactAlarms()
+    ) {
+
+        /*
+         * Exact alarm permission has not been granted.
+         *
+         * We still schedule an alarm so the feature remains
+         * functional, but Android may deliver it slightly later.
+         */
+        alarmManager.setAndAllowWhileIdle(
+            AlarmManager.RTC_WAKEUP,
+            alarmCalendar.timeInMillis,
+            pendingIntent
+        )
+
+    } else {
+
+        /*
+         * Exact 23:59 alarm.
+         */
+        alarmManager.setExactAndAllowWhileIdle(
+            AlarmManager.RTC_WAKEUP,
+            alarmCalendar.timeInMillis,
+            pendingIntent
+        )
+    }
+}
+
+
+/*
+ * Automatically saves the review for today.
+ *
+ * This function is called by the BroadcastReceiver at 23:59.
+ */
+private fun autoSaveDailyReview(
+    context: Context
+) {
+    val prefs = context.getSharedPreferences(
+        PREFS_NAME,
+        Context.MODE_PRIVATE
+    )
+
+    val midnight = todayMidnight()
+    val todayDate = fmtDate(midnight)
+
+    /*
+     * Safety check:
+     *
+     * If a manual save has already happened today,
+     * DO NOT overwrite it with an automatic save.
+     */
+    val manualSavedDate =
+        prefs.getString(
+            MANUAL_REVIEW_SAVED_DATE,
+            ""
+        ) ?: ""
+
+    if (manualSavedDate == todayDate) {
+
+        scheduleDailyReview(context)
+        return
+    }
+
+    val entriesJson =
+        prefs.getString(
+            "entries",
+            "[]"
+        ) ?: "[]"
+
+    val entriesArray = JSONArray(entriesJson)
+
+    val todayEntries = buildList {
+
+        for (i in 0 until entriesArray.length()) {
+
+            val o =
+                entriesArray.getJSONObject(i)
+
+            val entry = LogEntry(
+                type = o.getString("type"),
+                time = o.getLong("time"),
+                intensity = o.optInt("intensity"),
+                source = o.optString("source"),
+                context = o.optString("context"),
+                morning = o.optBoolean(
+                    "morning",
+                    false
+                )
+            )
+
+            if (sameDay(entry.time, midnight)) {
+                add(entry)
+            }
+        }
+    }
+
+    val review = DailyReview(
+        date = todayDate,
+        entries = todayEntries
+    )
+
+    val reviews =
+        JSONArray(
+            prefs.getString(
+                "dailyReviews",
+                "[]"
+            ) ?: "[]"
+        )
+
+    var replaced = false
+
+    for (i in 0 until reviews.length()) {
+
+        val existing =
+            reviews.getJSONObject(i)
+
+        if (
+            existing.optString("date") ==
+            review.date
+        ) {
+
+            reviews.put(
+                i,
+                reviewToJson(review)
+            )
+
+            replaced = true
+            break
+        }
+    }
+
+    if (!replaced) {
+        reviews.put(
+            reviewToJson(review)
+        )
+    }
+
+    prefs.edit()
+        .putString(
+            "dailyReviews",
+            reviews.toString()
+        )
+        .apply()
+
+    /*
+     * The automatic save is complete.
+     * Schedule tomorrow at exactly 23:59.
+     */
+    scheduleDailyReview(context)
+}
+
+
+/*
+ * Receives the 23:59 alarm.
+ */
+class DailyReviewAlarmReceiver : BroadcastReceiver() {
+
+    override fun onReceive(
+        context: Context,
+        intent: Intent?
+    ) {
+        if (
+            intent?.action == null ||
+            intent.action == Intent.ACTION_TIME_CHANGED ||
+            intent.action == Intent.ACTION_TIMEZONE_CHANGED ||
+            intent.action == Intent.ACTION_DATE_CHANGED
+        ) {
+            /*
+             * For normal alarm delivery intent.action is null.
+             * We also allow the system time/date broadcasts to
+             * reschedule the next review correctly.
+             */
+        }
+
+        autoSaveDailyReview(context)
+    }
+}
+
+
+/*
+ * Reschedules the daily review alarm after device reboot.
+ */
+class BootReceiver : BroadcastReceiver() {
+
+    override fun onReceive(
+        context: Context,
+        intent: Intent?
+    ) {
+        if (
+            intent?.action ==
+            Intent.ACTION_BOOT_COMPLETED
+        ) {
+            scheduleDailyReview(context)
+        }
+    }
+}
+
+
+/* ============================================================
+   MAIN ACTIVITY
+   ============================================================ */
+
 class MainActivity : ComponentActivity() {
 
     private val prefs by lazy {
-        getSharedPreferences("quit_track", MODE_PRIVATE)
+        getSharedPreferences(
+            PREFS_NAME,
+            MODE_PRIVATE
+        )
     }
 
-    override fun onCreate(savedInstanceState: Bundle?) {
+    override fun onCreate(
+        savedInstanceState: Bundle?
+    ) {
         super.onCreate(savedInstanceState)
 
+        /*
+         * Make sure the daily 23:59 review alarm exists
+         * whenever the application starts.
+         */
+        scheduleDailyReview(this)
+
+        /*
+         * If exact alarms are not yet permitted on Android 12+,
+         * open the system's "Alarms & reminders" permission page.
+         *
+         * The fallback alarm still works without this permission,
+         * but it may not fire exactly at 23:59.
+         */
+        if (
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+            !getSystemService(AlarmManager::class.java)
+                .canScheduleExactAlarms()
+        ) {
+            try {
+                startActivity(
+                    Intent(
+                        Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM
+                    )
+                )
+            } catch (_: Exception) {
+                /*
+                 * Some devices do not expose the exact-alarm
+                 * settings screen. The fallback alarm remains active.
+                 */
+            }
+        }
+
         setContent {
+
             QuitTrackApp(
-                loadStartDate = { prefs.getLong("startDate", 0L) },
-                saveStartDate = { prefs.edit().putLong("startDate", it).apply() },
-                loadEntries = { loadEntries() },
-                saveEntries = { saveEntries(it) },
-                loadDailyReviews = { loadDailyReviews() },
-                saveDailyReview = { saveDailyReview(it) }
+                loadStartDate = {
+                    prefs.getLong(
+                        "startDate",
+                        0L
+                    )
+                },
+
+                saveStartDate = {
+                    prefs.edit()
+                        .putLong(
+                            "startDate",
+                            it
+                        )
+                        .apply()
+                },
+
+                loadEntries = {
+                    loadEntries()
+                },
+
+                saveEntries = {
+                    saveEntries(it)
+                },
+
+                loadDailyReviews = {
+                    loadDailyReviews()
+                },
+
+                saveDailyReview = {
+                    saveDailyReview(it)
+                }
             )
         }
     }
 
     private fun loadEntries(): List<LogEntry> {
-        val a = JSONArray(prefs.getString("entries", "[]") ?: "[]")
+
+        val a = JSONArray(
+            prefs.getString(
+                "entries",
+                "[]"
+            ) ?: "[]"
+        )
 
         return buildList {
+
             for (i in 0 until a.length()) {
-                val o = a.getJSONObject(i)
+
+                val o =
+                    a.getJSONObject(i)
 
                 add(
                     LogEntry(
@@ -208,89 +643,180 @@ class MainActivity : ComponentActivity() {
                         o.optInt("intensity"),
                         o.optString("source"),
                         o.optString("context"),
-                        o.optBoolean("morning", false)
+                        o.optBoolean(
+                            "morning",
+                            false
+                        )
                     )
                 )
             }
         }
     }
 
-    private fun saveEntries(entries: List<LogEntry>) {
+    private fun saveEntries(
+        entries: List<LogEntry>
+    ) {
+
         val a = JSONArray()
 
         entries.forEach { e ->
+
             a.put(
                 JSONObject().apply {
-                    put("type", e.type)
-                    put("time", e.time)
-                    put("intensity", e.intensity)
-                    put("source", e.source)
-                    put("context", e.context)
-                    put("morning", e.morning)
+                    put(
+                        "type",
+                        e.type
+                    )
+                    put(
+                        "time",
+                        e.time
+                    )
+                    put(
+                        "intensity",
+                        e.intensity
+                    )
+                    put(
+                        "source",
+                        e.source
+                    )
+                    put(
+                        "context",
+                        e.context
+                    )
+                    put(
+                        "morning",
+                        e.morning
+                    )
                 }
             )
         }
 
-        prefs.edit().putString("entries", a.toString()).apply()
+        prefs.edit()
+            .putString(
+                "entries",
+                a.toString()
+            )
+            .apply()
     }
 
-    private fun saveDailyReview(review: DailyReview) {
+    private fun saveDailyReview(
+        review: DailyReview
+    ) {
+
         val reviews = JSONArray(
-            prefs.getString("dailyReviews", "[]") ?: "[]"
+            prefs.getString(
+                "dailyReviews",
+                "[]"
+            ) ?: "[]"
         )
 
         var replaced = false
 
         for (i in 0 until reviews.length()) {
-            val existing = reviews.getJSONObject(i)
 
-            if (existing.optString("date") == review.date) {
-                reviews.put(i, reviewToJson(review))
+            val existing =
+                reviews.getJSONObject(i)
+
+            if (
+                existing.optString("date") ==
+                review.date
+            ) {
+
+                reviews.put(
+                    i,
+                    reviewToJson(review)
+                )
+
                 replaced = true
                 break
             }
         }
 
         if (!replaced) {
-            reviews.put(reviewToJson(review))
+            reviews.put(
+                reviewToJson(review)
+            )
         }
 
         prefs.edit()
-            .putString("dailyReviews", reviews.toString())
+            .putString(
+                "dailyReviews",
+                reviews.toString()
+            )
             .apply()
     }
 
     private fun loadDailyReviews(): List<DailyReview> {
+
         val reviews = JSONArray(
-            prefs.getString("dailyReviews", "[]") ?: "[]"
+            prefs.getString(
+                "dailyReviews",
+                "[]"
+            ) ?: "[]"
         )
 
         return buildList {
+
             for (i in 0 until reviews.length()) {
-                val root = reviews.getJSONObject(i)
-                val array = root.optJSONArray("entries") ?: JSONArray()
 
-                val reviewEntries = buildList {
-                    for (j in 0 until array.length()) {
-                        val o = array.getJSONObject(j)
+                val root =
+                    reviews.getJSONObject(i)
 
-                        add(
-                            LogEntry(
-                                type = o.getString("type"),
-                                time = o.getLong("time"),
-                                intensity = o.optInt("intensity"),
-                                source = o.optString("source"),
-                                context = o.optString("context"),
-                                morning = o.optBoolean("morning", false)
+                val array =
+                    root.optJSONArray(
+                        "entries"
+                    ) ?: JSONArray()
+
+                val reviewEntries =
+                    buildList {
+
+                        for (
+                            j in 0 until array.length()
+                        ) {
+
+                            val o =
+                                array.getJSONObject(j)
+
+                            add(
+                                LogEntry(
+                                    type =
+                                        o.getString(
+                                            "type"
+                                        ),
+                                    time =
+                                        o.getLong(
+                                            "time"
+                                        ),
+                                    intensity =
+                                        o.optInt(
+                                            "intensity"
+                                        ),
+                                    source =
+                                        o.optString(
+                                            "source"
+                                        ),
+                                    context =
+                                        o.optString(
+                                            "context"
+                                        ),
+                                    morning =
+                                        o.optBoolean(
+                                            "morning",
+                                            false
+                                        )
+                                )
                             )
-                        )
+                        }
                     }
-                }
 
                 add(
                     DailyReview(
-                        date = root.optString("date"),
-                        entries = reviewEntries
+                        date =
+                            root.optString(
+                                "date"
+                            ),
+                        entries =
+                            reviewEntries
                     )
                 )
             }
@@ -298,38 +824,78 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private fun reviewToJson(review: DailyReview): JSONObject {
+
+/* ============================================================
+   JSON HELPERS
+   ============================================================ */
+
+private fun reviewToJson(
+    review: DailyReview
+): JSONObject {
+
     val root = JSONObject()
 
-    root.put("date", review.date)
+    root.put(
+        "date",
+        review.date
+    )
 
     val array = JSONArray()
 
     review.entries.forEach { e ->
+
         array.put(
             JSONObject().apply {
-                put("type", e.type)
-                put("time", e.time)
-                put("intensity", e.intensity)
-                put("source", e.source)
-                put("context", e.context)
-                put("morning", e.morning)
+                put(
+                    "type",
+                    e.type
+                )
+                put(
+                    "time",
+                    e.time
+                )
+                put(
+                    "intensity",
+                    e.intensity
+                )
+                put(
+                    "source",
+                    e.source
+                )
+                put(
+                    "context",
+                    e.context
+                )
+                put(
+                    "morning",
+                    e.morning
+                )
             }
         )
     }
 
-    root.put("entries", array)
+    root.put(
+        "entries",
+        array
+    )
 
     return root
 }
+
+
+/* ============================================================
+   THEME
+   ============================================================ */
 
 @Composable
 fun QuitTrackTheme(
     content: @Composable () -> Unit
 ) {
+
     val colors = darkColorScheme(
         primary = QuitGreen,
-        onPrimary = androidx.compose.ui.graphics.Color.White,
+        onPrimary =
+            androidx.compose.ui.graphics.Color.White,
         secondary = QuitOrange,
         background = WarmBackground,
         surface = CardWhite,
@@ -340,25 +906,35 @@ fun QuitTrackTheme(
     MaterialTheme(
         colorScheme = colors,
         typography = Typography(
-            bodyLarge = MaterialTheme.typography.bodyLarge.copy(
-                fontSize = 16.sp
-            ),
-            bodyMedium = MaterialTheme.typography.bodyMedium.copy(
-                fontSize = 13.sp
-            ),
-            titleLarge = MaterialTheme.typography.titleLarge.copy(
-                fontSize = 19.sp
-            ),
-            headlineSmall = MaterialTheme.typography.headlineSmall.copy(
-                fontSize = 28.sp
-            ),
-            headlineMedium = MaterialTheme.typography.headlineMedium.copy(
-                fontSize = 32.sp
-            )
+            bodyLarge =
+                MaterialTheme.typography.bodyLarge.copy(
+                    fontSize = 16.sp
+                ),
+            bodyMedium =
+                MaterialTheme.typography.bodyMedium.copy(
+                    fontSize = 13.sp
+                ),
+            titleLarge =
+                MaterialTheme.typography.titleLarge.copy(
+                    fontSize = 19.sp
+                ),
+            headlineSmall =
+                MaterialTheme.typography.headlineSmall.copy(
+                    fontSize = 28.sp
+                ),
+            headlineMedium =
+                MaterialTheme.typography.headlineMedium.copy(
+                    fontSize = 32.sp
+                )
         ),
         content = content
     )
 }
+
+
+/* ============================================================
+   MAIN APP
+   ============================================================ */
 
 @Composable
 fun QuitTrackApp(
@@ -369,57 +945,149 @@ fun QuitTrackApp(
     loadDailyReviews: () -> List<DailyReview>,
     saveDailyReview: (DailyReview) -> Unit
 ) {
-    var startDate by remember { mutableLongStateOf(loadStartDate()) }
-    var entries by remember { mutableStateOf(loadEntries()) }
-    var dailyReviews by remember { mutableStateOf(loadDailyReviews()) }
-    var screen by remember { mutableStateOf("Today") }
-    var selectedPhase by remember { mutableStateOf<PlanPhase?>(null) }
-    var smokeDialog by remember { mutableStateOf(false) }
-    var cravingDialog by remember { mutableStateOf(false) }
-    var reviewSaved by remember { mutableStateOf(false) }
 
-    BackHandler(enabled = screen != "Today" || smokeDialog || cravingDialog) {
+    var startDate by remember {
+        mutableLongStateOf(
+            loadStartDate()
+        )
+    }
+
+    var entries by remember {
+        mutableStateOf(
+            loadEntries()
+        )
+    }
+
+    var dailyReviews by remember {
+        mutableStateOf(
+            loadDailyReviews()
+        )
+    }
+
+    var screen by remember {
+        mutableStateOf("Today")
+    }
+
+    var selectedPhase by remember {
+        mutableStateOf<PlanPhase?>(null)
+    }
+
+    var smokeDialog by remember {
+        mutableStateOf(false)
+    }
+
+    var cravingDialog by remember {
+        mutableStateOf(false)
+    }
+
+    var reviewSaved by remember {
+        mutableStateOf(false)
+    }
+
+    val context = LocalContext.current
+
+    BackHandler(
+        enabled =
+            screen != "Today" ||
+                    smokeDialog ||
+                    cravingDialog
+    ) {
+
         when {
-            smokeDialog -> smokeDialog = false
-            cravingDialog -> cravingDialog = false
-            screen == "Entries" -> screen = "Today"
-            screen == "Emergency" -> screen = "Today"
-            screen == "DailyReviews" -> screen = "Stats"
-            else -> screen = "Today"
+            smokeDialog ->
+                smokeDialog = false
+
+            cravingDialog ->
+                cravingDialog = false
+
+            screen == "Entries" ->
+                screen = "Today"
+
+            screen == "Emergency" ->
+                screen = "Today"
+
+            screen == "DailyReviews" ->
+                screen = "Stats"
+
+            else ->
+                screen = "Today"
         }
     }
 
     val midnight = Calendar.getInstance().apply {
-        set(Calendar.HOUR_OF_DAY, 0)
-        set(Calendar.MINUTE, 0)
-        set(Calendar.SECOND, 0)
-        set(Calendar.MILLISECOND, 0)
+        set(
+            Calendar.HOUR_OF_DAY,
+            0
+        )
+        set(
+            Calendar.MINUTE,
+            0
+        )
+        set(
+            Calendar.SECOND,
+            0
+        )
+        set(
+            Calendar.MILLISECOND,
+            0
+        )
     }.timeInMillis
 
     if (startDate == 0L) {
+
         LaunchedEffect(Unit) {
+
             startDate = midnight
-            saveStartDate(midnight)
+
+            saveStartDate(
+                midnight
+            )
         }
     }
 
-    val day = (((midnight - startDate) / 86_400_000L).toInt() + 1)
-        .coerceIn(1, 40)
+    val day =
+        (((midnight - startDate) /
+                86_400_000L)
+            .toInt() + 1)
+            .coerceIn(1, 40)
 
-    val today = entries.filter { sameDay(it.time, midnight) }
-    val smoked = today.count { it.type == "SMOKED" }
-    val morning = today.count {
-        it.type == "SMOKED" && it.morning
-    }
-    val cravings = today.count { it.type == "CRAVING" }
+    val today =
+        entries.filter {
+            sameDay(
+                it.time,
+                midnight
+            )
+        }
+
+    val smoked =
+        today.count {
+            it.type == "SMOKED"
+        }
+
+    val morning =
+        today.count {
+            it.type == "SMOKED" &&
+                    it.morning
+        }
+
+    val cravings =
+        today.count {
+            it.type == "CRAVING"
+        }
 
     QuitTrackTheme {
+
         Scaffold(
-            containerColor = MaterialTheme.colorScheme.background,
+            containerColor =
+                MaterialTheme.colorScheme.background,
+
             bottomBar = {
+
                 NavigationBar(
-                    containerColor = MaterialTheme.colorScheme.surface
+                    containerColor =
+                        MaterialTheme.colorScheme.surface
                 ) {
+
                     listOf(
                         "Today" to "⌂",
                         "Plan" to "☷",
@@ -428,18 +1096,25 @@ fun QuitTrackApp(
                     ).forEach { (name, icon) ->
 
                         NavigationBarItem(
-                            selected = screen == name,
-                            onClick = { screen = name },
+                            selected =
+                                screen == name,
+
+                            onClick = {
+                                screen = name
+                            },
+
                             icon = {
                                 Text(
                                     icon,
                                     fontSize = 22.sp
                                 )
                             },
+
                             label = {
                                 Text(
                                     name,
-                                    textAlign = TextAlign.Center
+                                    textAlign =
+                                        TextAlign.Center
                                 )
                             }
                         )
@@ -456,33 +1131,106 @@ fun QuitTrackApp(
                     smoked,
                     morning,
                     cravings,
-                    onSmoke = { smokeDialog = true },
-                    onCraving = { cravingDialog = true },
-                    onEntries = { screen = "Entries" },
+
+                    onSmoke = {
+                        smokeDialog = true
+                    },
+
+                    onCraving = {
+                        cravingDialog = true
+                    },
+
+                    onEntries = {
+                        screen = "Entries"
+                    },
+
                     onPlan = {
-                        selectedPhase = planPhases.firstOrNull {
-                            day in it.dayStart..it.dayEnd
-                        }
+                        selectedPhase =
+                            planPhases.firstOrNull {
+                                day in
+                                        it.dayStart..it.dayEnd
+                            }
+
                         screen = "PhaseDetail"
                     },
-                    onEmergency = { screen = "Emergency" },
-                    onSaveReview = {
-                        val todayEntries = entries.filter {
-                            sameDay(it.time, midnight)
-                        }
 
-                        val review = DailyReview(
-                            date = fmtDate(midnight),
-                            entries = todayEntries
+                    onEmergency = {
+                        screen = "Emergency"
+                    },
+
+                    onSaveReview = {
+
+                        val todayEntries =
+                            entries.filter {
+                                sameDay(
+                                    it.time,
+                                    midnight
+                                )
+                            }
+
+                        val review =
+                            DailyReview(
+                                date =
+                                    fmtDate(
+                                        midnight
+                                    ),
+                                entries =
+                                    todayEntries
+                            )
+
+                        /*
+                         * Save the review immediately.
+                         */
+                        saveDailyReview(
+                            review
                         )
 
-                        saveDailyReview(review)
+                        dailyReviews =
+                            dailyReviews
+                                .filterNot {
+                                    it.date ==
+                                            review.date
+                                } + review
 
-                        dailyReviews = dailyReviews
-                            .filterNot { it.date == review.date } + review
+                        /*
+                         * IMPORTANT:
+                         *
+                         * Mark today's review as
+                         * MANUALLY saved.
+                         *
+                         * This flag prevents the 23:59
+                         * automatic save from running for
+                         * today's review.
+                         */
+                        context
+                            .getSharedPreferences(
+                                PREFS_NAME,
+                                Context.MODE_PRIVATE
+                            )
+                            .edit()
+                            .putString(
+                                MANUAL_REVIEW_SAVED_DATE,
+                                review.date
+                            )
+                            .apply()
+
+                        /*
+                         * Cancel today's 23:59 alarm.
+                         */
+                        cancelDailyReviewAlarm(
+                            context
+                        )
+
+                        /*
+                         * Schedule tomorrow's 23:59 alarm.
+                         */
+                        scheduleDailyReview(
+                            context
+                        )
 
                         reviewSaved = true
                     },
+
                     reviewSaved = reviewSaved
                 )
 
@@ -490,140 +1238,275 @@ fun QuitTrackApp(
                     Modifier.padding(pad),
                     day,
                     selectedPhase,
+
                     onPhaseClick = { phase ->
-                        selectedPhase = phase
-                        screen = "PhaseDetail"
+
+                        selectedPhase =
+                            phase
+
+                        screen =
+                            "PhaseDetail"
                     }
                 )
 
-                "PhaseDetail" -> selectedPhase?.let { phase ->
-                    PhaseDetailScreen(
-                        Modifier.padding(pad),
-                        phase = phase,
-                        onBack = {
-                            selectedPhase = null
-                            screen = "Plan"
-                        },
-                        onAction = {
-                            when (phase.phase) {
-                                1 -> screen = "Today"
-                                2 -> screen = "Today"
-                                3 -> screen = "Emergency"
-                                4 -> screen = "Emergency"
-                                5 -> screen = "Emergency"
-                                6 -> screen = "Stats"
+                "PhaseDetail" ->
+                    selectedPhase?.let { phase ->
+
+                        PhaseDetailScreen(
+                            Modifier.padding(pad),
+                            phase = phase,
+
+                            onBack = {
+                                selectedPhase =
+                                    null
+
+                                screen =
+                                    "Plan"
+                            },
+
+                            onAction = {
+
+                                when (phase.phase) {
+
+                                    1 ->
+                                        screen =
+                                            "Today"
+
+                                    2 ->
+                                        screen =
+                                            "Today"
+
+                                    3 ->
+                                        screen =
+                                            "Emergency"
+
+                                    4 ->
+                                        screen =
+                                            "Emergency"
+
+                                    5 ->
+                                        screen =
+                                            "Emergency"
+
+                                    6 ->
+                                        screen =
+                                            "Stats"
+                                }
                             }
-                        }
-                    )
-                }
+                        )
+                    }
 
                 "Stats" -> StatsScreen(
                     Modifier.padding(pad),
                     entries,
-                    onDailyReviews = { screen = "DailyReviews" }
-                )
 
-                "DailyReviews" -> DailyReviewsScreen(
-                    Modifier.padding(pad),
-                    reviews = dailyReviews,
-                    onBack = { screen = "Stats" }
-                )
-
-                "Settings" -> SettingsScreen(
-                    Modifier.padding(pad),
-                    startDate = startDate,
-                    entries = entries,
-                    onReset = {
-                        val now = Calendar.getInstance().apply {
-                            set(Calendar.HOUR_OF_DAY, 0)
-                            set(Calendar.MINUTE, 0)
-                            set(Calendar.SECOND, 0)
-                            set(Calendar.MILLISECOND, 0)
-                        }.timeInMillis
-
-                        startDate = now
-                        entries = emptyList()
-
-                        saveStartDate(now)
-                        saveEntries(entries)
-                    },
-                    onImport = { importedStartDate, importedEntries ->
-                        startDate = importedStartDate
-                        entries = importedEntries
-                        saveStartDate(importedStartDate)
-                        saveEntries(importedEntries)
+                    onDailyReviews = {
+                        screen =
+                            "DailyReviews"
                     }
                 )
 
-                "Entries" -> EntriesScreen(
-                    Modifier.padding(pad),
-                    entries,
-                    onBack = { screen = "Today" }
-                )
+                "DailyReviews" ->
+                    DailyReviewsScreen(
+                        Modifier.padding(pad),
+                        reviews =
+                            dailyReviews,
 
-                "Emergency" -> EmergencyScreen(
-                    Modifier.padding(pad),
-                    onBack = { screen = "Today" }
-                )
+                        onBack = {
+                            screen =
+                                "Stats"
+                        }
+                    )
+
+                "Settings" ->
+                    SettingsScreen(
+                        Modifier.padding(pad),
+                        startDate =
+                            startDate,
+                        entries =
+                            entries,
+
+                        onReset = {
+
+                            val now =
+                                Calendar.getInstance()
+                                    .apply {
+                                        set(
+                                            Calendar.HOUR_OF_DAY,
+                                            0
+                                        )
+                                        set(
+                                            Calendar.MINUTE,
+                                            0
+                                        )
+                                        set(
+                                            Calendar.SECOND,
+                                            0
+                                        )
+                                        set(
+                                            Calendar.MILLISECOND,
+                                            0
+                                        )
+                                    }
+                                    .timeInMillis
+
+                            startDate =
+                                now
+
+                            entries =
+                                emptyList()
+
+                            saveStartDate(
+                                now
+                            )
+
+                            saveEntries(
+                                entries
+                            )
+                        },
+
+                        onImport = {
+                                importedStartDate,
+                                importedEntries ->
+
+                            startDate =
+                                importedStartDate
+
+                            entries =
+                                importedEntries
+
+                            saveStartDate(
+                                importedStartDate
+                            )
+
+                            saveEntries(
+                                importedEntries
+                            )
+                        }
+                    )
+
+                "Entries" ->
+                    EntriesScreen(
+                        Modifier.padding(pad),
+                        entries,
+
+                        onBack = {
+                            screen =
+                                "Today"
+                        }
+                    )
+
+                "Emergency" ->
+                    EmergencyScreen(
+                        Modifier.padding(pad),
+
+                        onBack = {
+                            screen =
+                                "Today"
+                        }
+                    )
             }
         }
 
         if (smokeDialog) {
-            SmokeDialog(
-                dismiss = { smokeDialog = false }
-            ) { source, context, intensity, morning ->
 
-                entries = entries + LogEntry(
-                    "SMOKED",
-                    System.currentTimeMillis(),
-                    intensity,
+            SmokeDialog(
+                dismiss = {
+                    smokeDialog = false
+                }
+            ) {
                     source,
-                    context,
-                    morning
+                    contextValue,
+                    intensity,
+                    morningValue ->
+
+                entries =
+                    entries + LogEntry(
+                        "SMOKED",
+                        System.currentTimeMillis(),
+                        intensity,
+                        source,
+                        contextValue,
+                        morningValue
+                    )
+
+                saveEntries(
+                    entries
                 )
 
-                saveEntries(entries)
-                smokeDialog = false
+                smokeDialog =
+                    false
             }
         }
 
         if (cravingDialog) {
-            CravingDialog(
-                dismiss = { cravingDialog = false }
-            ) { intensity, context, morning ->
 
-                entries = entries + LogEntry(
-                    "CRAVING",
-                    System.currentTimeMillis(),
+            CravingDialog(
+                dismiss = {
+                    cravingDialog = false
+                }
+            ) {
                     intensity,
-                    context = context,
-                    morning = morning
+                    contextValue,
+                    morningValue ->
+
+                entries =
+                    entries + LogEntry(
+                        "CRAVING",
+                        System.currentTimeMillis(),
+                        intensity,
+                        context = contextValue,
+                        morning = morningValue
+                    )
+
+                saveEntries(
+                    entries
                 )
 
-                saveEntries(entries)
-                cravingDialog = false
+                cravingDialog =
+                    false
             }
         }
     }
 }
+
+
+/* ============================================================
+   APP CARD
+   ============================================================ */
 
 @Composable
 fun AppCard(
     modifier: Modifier = Modifier,
     content: @Composable ColumnScope.() -> Unit
 ) {
+
     Card(
-        modifier = modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface
-        ),
-        shape = RoundedCornerShape(18.dp),
-        elevation = CardDefaults.cardElevation(
-            defaultElevation = 1.dp
-        ),
+        modifier =
+            modifier.fillMaxWidth(),
+
+        colors =
+            CardDefaults.cardColors(
+                containerColor =
+                    MaterialTheme.colorScheme.surface
+            ),
+
+        shape =
+            RoundedCornerShape(18.dp),
+
+        elevation =
+            CardDefaults.cardElevation(
+                defaultElevation = 1.dp
+            ),
+
         content = content
     )
 }
+
+
+/* ============================================================
+   TODAY SCREEN
+   ============================================================ */
 
 @Composable
 fun TodayScreen(
@@ -640,122 +1523,186 @@ fun TodayScreen(
     onSaveReview: () -> Unit,
     reviewSaved: Boolean
 ) {
+
     LazyColumn(
-        modifier = m.fillMaxSize(),
-        contentPadding = PaddingValues(
-            start = 20.dp,
-            end = 20.dp,
-            top = 24.dp,
-            bottom = 24.dp
-        ),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
+        modifier =
+            m.fillMaxSize(),
+
+        contentPadding =
+            PaddingValues(
+                start = 20.dp,
+                end = 20.dp,
+                top = 24.dp,
+                bottom = 24.dp
+            ),
+
+        verticalArrangement =
+            Arrangement.spacedBy(14.dp)
     ) {
 
         item {
+
             Column(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalAlignment = Alignment.CenterHorizontally
+                modifier =
+                    Modifier.fillMaxWidth(),
+
+                horizontalAlignment =
+                    Alignment.CenterHorizontally
             ) {
+
                 Text(
                     "Quit Track",
-                    style = MaterialTheme.typography.headlineSmall,
-                    fontWeight = FontWeight.Bold,
-                    color = QuitGreen,
-                    textAlign = TextAlign.Center
+                    style =
+                        MaterialTheme.typography.headlineSmall,
+                    fontWeight =
+                        FontWeight.Bold,
+                    color =
+                        QuitGreen,
+                    textAlign =
+                        TextAlign.Center
                 )
 
-                Spacer(Modifier.height(4.dp))
-
-                
+                Spacer(
+                    Modifier.height(4.dp)
+                )
             }
         }
 
         item {
+
             Column(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(4.dp)
+                modifier =
+                    Modifier.fillMaxWidth(),
+
+                horizontalAlignment =
+                    Alignment.CenterHorizontally,
+
+                verticalArrangement =
+                    Arrangement.spacedBy(4.dp)
             ) {
+
                 Text(
                     "Hi Faith!",
-                    style = MaterialTheme.typography.headlineSmall,
-                    fontWeight = FontWeight.Bold,
-                    textAlign = TextAlign.Center
+                    style =
+                        MaterialTheme.typography.headlineSmall,
+                    fontWeight =
+                        FontWeight.Bold,
+                    textAlign =
+                        TextAlign.Center
                 )
 
                 Text(
                     "One day at a time.",
-                    color = TextMuted,
-                    textAlign = TextAlign.Center
+                    color =
+                        TextMuted,
+                    textAlign =
+                        TextAlign.Center
                 )
             }
         }
 
         item {
+
             AppCard(
-                modifier = Modifier.clickable { onPlan() }
+                modifier =
+                    Modifier.clickable {
+                        onPlan()
+                    }
             ) {
+
                 Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(20.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                    modifier =
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(20.dp),
+
+                    horizontalAlignment =
+                        Alignment.CenterHorizontally,
+
+                    verticalArrangement =
+                        Arrangement.spacedBy(14.dp)
                 ) {
+
                     Text(
                         "DAY $day OF 40",
-                        style = MaterialTheme.typography.headlineMedium,
-                        fontWeight = FontWeight.Bold,
-                        textAlign = TextAlign.Center
+                        style =
+                            MaterialTheme.typography.headlineMedium,
+                        fontWeight =
+                            FontWeight.Bold,
+                        textAlign =
+                            TextAlign.Center
                     )
 
                     Text(
                         "Phase ${phaseForDay(day)} • ${phaseName(day)}",
-                        color = TextMuted,
-                        textAlign = TextAlign.Center
+                        color =
+                            TextMuted,
+                        textAlign =
+                            TextAlign.Center
                     )
 
                     HorizontalDivider(
-                        color = BorderLight
+                        color =
+                            BorderLight
                     )
 
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceEvenly
+                        modifier =
+                            Modifier.fillMaxWidth(),
+
+                        horizontalArrangement =
+                            Arrangement.SpaceEvenly
                     ) {
+
                         Column(
-                            horizontalAlignment = Alignment.CenterHorizontally
+                            horizontalAlignment =
+                                Alignment.CenterHorizontally
                         ) {
+
                             Text(
                                 smoked.toString(),
-                                style = MaterialTheme.typography.headlineMedium,
-                                fontWeight = FontWeight.Bold,
-                                textAlign = TextAlign.Center
+                                style =
+                                    MaterialTheme.typography.headlineMedium,
+                                fontWeight =
+                                    FontWeight.Bold,
+                                textAlign =
+                                    TextAlign.Center
                             )
 
                             Text(
                                 "Cigarettes today",
-                                color = TextMuted,
-                                style = MaterialTheme.typography.bodySmall,
-                                textAlign = TextAlign.Center
+                                color =
+                                    TextMuted,
+                                style =
+                                    MaterialTheme.typography.bodySmall,
+                                textAlign =
+                                    TextAlign.Center
                             )
                         }
 
                         Column(
-                            horizontalAlignment = Alignment.CenterHorizontally
+                            horizontalAlignment =
+                                Alignment.CenterHorizontally
                         ) {
+
                             Text(
                                 morning.toString(),
-                                style = MaterialTheme.typography.headlineMedium,
-                                fontWeight = FontWeight.Bold,
-                                textAlign = TextAlign.Center
+                                style =
+                                    MaterialTheme.typography.headlineMedium,
+                                fontWeight =
+                                    FontWeight.Bold,
+                                textAlign =
+                                    TextAlign.Center
                             )
 
                             Text(
                                 "Morning cigarettes",
-                                color = TextMuted,
-                                style = MaterialTheme.typography.bodySmall,
-                                textAlign = TextAlign.Center
+                                color =
+                                    TextMuted,
+                                style =
+                                    MaterialTheme.typography.bodySmall,
+                                textAlign =
+                                    TextAlign.Center
                             )
                         }
                     }
@@ -764,60 +1711,95 @@ fun TodayScreen(
         }
 
         item {
+
             Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                modifier =
+                    Modifier.fillMaxWidth(),
+
+                horizontalArrangement =
+                    Arrangement.spacedBy(12.dp)
             ) {
+
                 Button(
-                    onClick = onSmoke,
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(82.dp),
-                    shape = RoundedCornerShape(18.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = QuitGreen
-                    )
+                    onClick =
+                        onSmoke,
+
+                    modifier =
+                        Modifier
+                            .weight(1f)
+                            .height(82.dp),
+
+                    shape =
+                        RoundedCornerShape(18.dp),
+
+                    colors =
+                        ButtonDefaults.buttonColors(
+                            containerColor =
+                                QuitGreen
+                        )
                 ) {
+
                     Column(
-                        horizontalAlignment = Alignment.CenterHorizontally
+                        horizontalAlignment =
+                            Alignment.CenterHorizontally
                     ) {
+
                         Text(
                             "＋",
-                            fontSize = 25.sp,
-                            textAlign = TextAlign.Center
+                            fontSize =
+                                25.sp,
+                            textAlign =
+                                TextAlign.Center
                         )
 
                         Text(
                             "Log a cigarette",
-                            fontWeight = FontWeight.Bold,
-                            textAlign = TextAlign.Center
+                            fontWeight =
+                                FontWeight.Bold,
+                            textAlign =
+                                TextAlign.Center
                         )
                     }
                 }
 
                 Button(
-                    onClick = onCraving,
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(82.dp),
-                    shape = RoundedCornerShape(18.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = QuitOrange
-                    )
+                    onClick =
+                        onCraving,
+
+                    modifier =
+                        Modifier
+                            .weight(1f)
+                            .height(82.dp),
+
+                    shape =
+                        RoundedCornerShape(18.dp),
+
+                    colors =
+                        ButtonDefaults.buttonColors(
+                            containerColor =
+                                QuitOrange
+                        )
                 ) {
+
                     Column(
-                        horizontalAlignment = Alignment.CenterHorizontally
+                        horizontalAlignment =
+                            Alignment.CenterHorizontally
                     ) {
+
                         Text(
                             "🔥",
-                            fontSize = 23.sp,
-                            textAlign = TextAlign.Center
+                            fontSize =
+                                23.sp,
+                            textAlign =
+                                TextAlign.Center
                         )
 
                         Text(
                             "I have a craving",
-                            fontWeight = FontWeight.Bold,
-                            textAlign = TextAlign.Center
+                            fontWeight =
+                                FontWeight.Bold,
+                            textAlign =
+                                TextAlign.Center
                         )
                     }
                 }
@@ -825,55 +1807,89 @@ fun TodayScreen(
         }
 
         item {
+
             Button(
-                onClick = onSaveReview,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(56.dp),
-                shape = RoundedCornerShape(16.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = QuitGreen
-                )
+                onClick =
+                    onSaveReview,
+
+                modifier =
+                    Modifier
+                        .fillMaxWidth()
+                        .height(56.dp),
+
+                shape =
+                    RoundedCornerShape(16.dp),
+
+                colors =
+                    ButtonDefaults.buttonColors(
+                        containerColor =
+                            QuitGreen
+                    )
             ) {
+
                 Text(
                     if (reviewSaved)
                         "✓  Today's review saved"
                     else
                         "✓  Save today's review",
-                    fontWeight = FontWeight.Bold,
-                    textAlign = TextAlign.Center
+
+                    fontWeight =
+                        FontWeight.Bold,
+
+                    textAlign =
+                        TextAlign.Center
                 )
             }
         }
 
         item {
+
             ActionCard(
-                title = "Today's plan",
-                subtitle = "Focus on today's targets",
-                icon = "🎯",
-                onClick = onPlan
+                title =
+                    "Today's plan",
+                subtitle =
+                    "Focus on today's targets",
+                icon =
+                    "🎯",
+                onClick =
+                    onPlan
             )
         }
 
         item {
+
             ActionCard(
-                title = "Emergency craving help",
-                subtitle = "Tools to get through strong urges",
-                icon = "🛟",
-                onClick = onEmergency
+                title =
+                    "Emergency craving help",
+                subtitle =
+                    "Tools to get through strong urges",
+                icon =
+                    "🛟",
+                onClick =
+                    onEmergency
             )
         }
 
         item {
+
             ActionCard(
-                title = "View all entries",
-                subtitle = "$cravings cravings • $smoked cigarettes today",
-                icon = "📋",
-                onClick = onEntries
+                title =
+                    "View all entries",
+                subtitle =
+                    "$cravings cravings • $smoked cigarettes today",
+                icon =
+                    "📋",
+                onClick =
+                    onEntries
             )
         }
     }
 }
+
+
+/* ============================================================
+   ACTION CARD
+   ============================================================ */
 
 @Composable
 fun ActionCard(
@@ -882,37 +1898,60 @@ fun ActionCard(
     icon: String,
     onClick: () -> Unit
 ) {
+
     AppCard(
-        modifier = Modifier.clickable { onClick() }
+        modifier =
+            Modifier.clickable {
+                onClick()
+            }
     ) {
+
         Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(5.dp)
+            modifier =
+                Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+
+            horizontalAlignment =
+                Alignment.CenterHorizontally,
+
+            verticalArrangement =
+                Arrangement.spacedBy(5.dp)
         ) {
+
             Text(
                 icon,
-                fontSize = 28.sp,
-                textAlign = TextAlign.Center
+                fontSize =
+                    28.sp,
+                textAlign =
+                    TextAlign.Center
             )
 
             Text(
                 title,
-                fontWeight = FontWeight.Bold,
-                textAlign = TextAlign.Center
+                fontWeight =
+                    FontWeight.Bold,
+                textAlign =
+                    TextAlign.Center
             )
 
             Text(
                 subtitle,
-                color = TextMuted,
-                style = MaterialTheme.typography.bodySmall,
-                textAlign = TextAlign.Center
+                color =
+                    TextMuted,
+                style =
+                    MaterialTheme.typography.bodySmall,
+                textAlign =
+                    TextAlign.Center
             )
         }
     }
 }
+
+
+/* ============================================================
+   PLAN SCREEN
+   ============================================================ */
 
 @Composable
 fun PlanScreen(
@@ -921,160 +1960,256 @@ fun PlanScreen(
     selectedPhase: PlanPhase? = null,
     onPhaseClick: (PlanPhase) -> Unit
 ) {
-    val listState = rememberLazyListState()
+
+    val listState =
+        rememberLazyListState()
 
     LaunchedEffect(currentDay) {
-        val index = planPhases.indexOfFirst {
-            currentDay in it.dayStart..it.dayEnd
-        }
+
+        val index =
+            planPhases.indexOfFirst {
+                currentDay in
+                        it.dayStart..it.dayEnd
+            }
 
         if (index >= 0) {
-            listState.animateScrollToItem(index + 2)
+
+            listState.animateScrollToItem(
+                index + 2
+            )
         }
     }
 
     LazyColumn(
-        state = listState,
-        modifier = m.fillMaxSize(),
-        contentPadding = PaddingValues(
-            start = 20.dp,
-            end = 20.dp,
-            top = 24.dp,
-            bottom = 24.dp
-        ),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
+        state =
+            listState,
+
+        modifier =
+            m.fillMaxSize(),
+
+        contentPadding =
+            PaddingValues(
+                start = 20.dp,
+                end = 20.dp,
+                top = 24.dp,
+                bottom = 24.dp
+            ),
+
+        verticalArrangement =
+            Arrangement.spacedBy(14.dp)
     ) {
 
         item {
+
             Text(
                 "Plan",
-                modifier = Modifier.fillMaxWidth(),
-                style = MaterialTheme.typography.headlineSmall,
-                fontWeight = FontWeight.Bold,
-                color = QuitGreen,
-                textAlign = TextAlign.Center
+                modifier =
+                    Modifier.fillMaxWidth(),
+                style =
+                    MaterialTheme.typography.headlineSmall,
+                fontWeight =
+                    FontWeight.Bold,
+                color =
+                    QuitGreen,
+                textAlign =
+                    TextAlign.Center
             )
         }
 
         item {
+
             Column(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(4.dp)
+                modifier =
+                    Modifier.fillMaxWidth(),
+
+                horizontalAlignment =
+                    Alignment.CenterHorizontally,
+
+                verticalArrangement =
+                    Arrangement.spacedBy(4.dp)
             ) {
+
                 Text(
                     "Your 40-Day Plan",
-                    modifier = Modifier.fillMaxWidth(),
-                    style = MaterialTheme.typography.headlineMedium,
-                    fontWeight = FontWeight.Bold,
-                    textAlign = TextAlign.Center
+                    modifier =
+                        Modifier.fillMaxWidth(),
+                    style =
+                        MaterialTheme.typography.headlineMedium,
+                    fontWeight =
+                        FontWeight.Bold,
+                    textAlign =
+                        TextAlign.Center
                 )
 
                 Text(
                     "Your journey toward a smoke-free life.",
-                    modifier = Modifier.fillMaxWidth(),
-                    color = TextMuted,
-                    textAlign = TextAlign.Center
+                    modifier =
+                        Modifier.fillMaxWidth(),
+                    color =
+                        TextMuted,
+                    textAlign =
+                        TextAlign.Center
                 )
             }
         }
 
         items(planPhases) { phase ->
 
-            val current = currentDay in phase.dayStart..phase.dayEnd
-            val completed = currentDay > phase.dayEnd
+            val current =
+                currentDay in
+                        phase.dayStart..phase.dayEnd
+
+            val completed =
+                currentDay > phase.dayEnd
 
             AppCard(
-                modifier = Modifier.clickable {
-                    onPhaseClick(phase)
-                }
+                modifier =
+                    Modifier.clickable {
+                        onPhaseClick(
+                            phase
+                        )
+                    }
             ) {
+
                 Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(18.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                    modifier =
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(18.dp),
+
+                    horizontalAlignment =
+                        Alignment.CenterHorizontally,
+
+                    verticalArrangement =
+                        Arrangement.spacedBy(8.dp)
                 ) {
 
                     Box(
-                        modifier = Modifier
-                            .size(42.dp)
-                            .clip(CircleShape)
-                            .background(
-                                when {
-                                    completed -> QuitGreen
-                                    current -> QuitGreenLight
-                                    else -> BorderLight
-                                }
-                            ),
-                        contentAlignment = Alignment.Center
+                        modifier =
+                            Modifier
+                                .size(42.dp)
+                                .clip(CircleShape)
+                                .background(
+                                    when {
+                                        completed ->
+                                            QuitGreen
+
+                                        current ->
+                                            QuitGreenLight
+
+                                        else ->
+                                            BorderLight
+                                    }
+                                ),
+
+                        contentAlignment =
+                            Alignment.Center
                     ) {
+
                         Text(
-                            if (completed) "✓"
-                            else phase.phase.toString(),
-                            fontWeight = FontWeight.Bold,
-                            color = if (completed)
-                                androidx.compose.ui.graphics.Color.White
+                            if (completed)
+                                "✓"
                             else
-                                QuitGreen,
-                            textAlign = TextAlign.Center
+                                phase.phase.toString(),
+
+                            fontWeight =
+                                FontWeight.Bold,
+
+                            color =
+                                if (completed)
+                                    androidx.compose.ui.graphics.Color.White
+                                else
+                                    QuitGreen,
+
+                            textAlign =
+                                TextAlign.Center
                         )
                     }
 
                     Text(
                         "Phase ${phase.phase} • ${phase.name}",
-                        modifier = Modifier.fillMaxWidth(),
-                        fontWeight = FontWeight.Bold,
-                        textAlign = TextAlign.Center
+                        modifier =
+                            Modifier.fillMaxWidth(),
+                        fontWeight =
+                            FontWeight.Bold,
+                        textAlign =
+                            TextAlign.Center
                     )
 
                     Text(
-                        if (phase.dayStart == phase.dayEnd)
+                        if (
+                            phase.dayStart ==
+                            phase.dayEnd
+                        )
                             "Day ${phase.dayStart}"
                         else
                             "Day ${phase.dayStart} to Day ${phase.dayEnd}",
-                        modifier = Modifier.fillMaxWidth(),
-                        fontWeight = if (current)
-                            FontWeight.Bold
-                        else
-                            FontWeight.Normal,
-                        textAlign = TextAlign.Center
+
+                        modifier =
+                            Modifier.fillMaxWidth(),
+
+                        fontWeight =
+                            if (current)
+                                FontWeight.Bold
+                            else
+                                FontWeight.Normal,
+
+                        textAlign =
+                            TextAlign.Center
                     )
 
                     Text(
                         phase.description,
-                        modifier = Modifier.fillMaxWidth(),
-                        color = TextMuted,
-                        style = MaterialTheme.typography.bodySmall,
-                        textAlign = TextAlign.Center
+                        modifier =
+                            Modifier.fillMaxWidth(),
+                        color =
+                            TextMuted,
+                        style =
+                            MaterialTheme.typography.bodySmall,
+                        textAlign =
+                            TextAlign.Center
                     )
                 }
             }
         }
 
         item {
+
             AppCard {
+
                 Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(18.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                    modifier =
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(18.dp),
+
+                    horizontalAlignment =
+                        Alignment.CenterHorizontally,
+
+                    verticalArrangement =
+                        Arrangement.spacedBy(6.dp)
                 ) {
+
                     Text(
                         "Every day is a step forward",
-                        modifier = Modifier.fillMaxWidth(),
-                        fontWeight = FontWeight.Bold,
-                        color = QuitGreen,
-                        textAlign = TextAlign.Center
+                        modifier =
+                            Modifier.fillMaxWidth(),
+                        fontWeight =
+                            FontWeight.Bold,
+                        color =
+                            QuitGreen,
+                        textAlign =
+                            TextAlign.Center
                     )
 
                     Text(
                         "Small steps. Big change.",
-                        modifier = Modifier.fillMaxWidth(),
-                        color = TextMuted,
-                        textAlign = TextAlign.Center
+                        modifier =
+                            Modifier.fillMaxWidth(),
+                        color =
+                            TextMuted,
+                        textAlign =
+                            TextAlign.Center
                     )
                 }
             }
@@ -1082,97 +2217,160 @@ fun PlanScreen(
     }
 }
 
+
+/* ============================================================
+   STATS SCREEN
+   ============================================================ */
+
 @Composable
 fun StatsScreen(
     m: Modifier,
     entries: List<LogEntry>,
     onDailyReviews: () -> Unit
 ) {
-    val smoked = entries.filter { it.type == "SMOKED" }
-    val cravings = entries.filter { it.type == "CRAVING" }
+
+    val smoked =
+        entries.filter {
+            it.type == "SMOKED"
+        }
+
+    val cravings =
+        entries.filter {
+            it.type == "CRAVING"
+        }
 
     val averageCraving =
-        if (cravings.isEmpty()) 0.0
-        else cravings.map { it.intensity }.average()
+        if (cravings.isEmpty())
+            0.0
+        else
+            cravings
+                .map {
+                    it.intensity
+                }
+                .average()
 
     val highestCraving =
-        cravings.maxOfOrNull { it.intensity } ?: 0
+        cravings.maxOfOrNull {
+            it.intensity
+        } ?: 0
 
     LazyColumn(
-        modifier = m.fillMaxSize(),
-        contentPadding = PaddingValues(
-            start = 20.dp,
-            end = 20.dp,
-            top = 24.dp,
-            bottom = 24.dp
-        ),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
+        modifier =
+            m.fillMaxSize(),
+
+        contentPadding =
+            PaddingValues(
+                start = 20.dp,
+                end = 20.dp,
+                top = 24.dp,
+                bottom = 24.dp
+            ),
+
+        verticalArrangement =
+            Arrangement.spacedBy(14.dp)
     ) {
 
         item {
+
             Text(
                 "Stats",
-                modifier = Modifier.fillMaxWidth(),
-                style = MaterialTheme.typography.headlineSmall,
-                fontWeight = FontWeight.Bold,
-                color = QuitGreen,
-                textAlign = TextAlign.Center
+                modifier =
+                    Modifier.fillMaxWidth(),
+                style =
+                    MaterialTheme.typography.headlineSmall,
+                fontWeight =
+                    FontWeight.Bold,
+                color =
+                    QuitGreen,
+                textAlign =
+                    TextAlign.Center
             )
         }
 
         item {
+
             AppCard {
+
                 Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(18.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                    modifier =
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(18.dp),
+
+                    horizontalAlignment =
+                        Alignment.CenterHorizontally,
+
+                    verticalArrangement =
+                        Arrangement.spacedBy(14.dp)
                 ) {
+
                     Text(
                         "Overview",
-                        modifier = Modifier.fillMaxWidth(),
-                        fontWeight = FontWeight.Bold,
-                        textAlign = TextAlign.Center
+                        modifier =
+                            Modifier.fillMaxWidth(),
+                        fontWeight =
+                            FontWeight.Bold,
+                        textAlign =
+                            TextAlign.Center
                     )
 
                     Text(
                         "Your progress so far",
-                        modifier = Modifier.fillMaxWidth(),
-                        color = TextMuted,
-                        style = MaterialTheme.typography.bodySmall,
-                        textAlign = TextAlign.Center
+                        modifier =
+                            Modifier.fillMaxWidth(),
+                        color =
+                            TextMuted,
+                        style =
+                            MaterialTheme.typography.bodySmall,
+                        textAlign =
+                            TextAlign.Center
                     )
 
                     Surface(
-                        shape = RoundedCornerShape(10.dp),
-                        color = QuitGreenLight
+                        shape =
+                            RoundedCornerShape(10.dp),
+                        color =
+                            QuitGreenLight
                     ) {
+
                         Text(
                             "All time",
-                            modifier = Modifier.padding(
-                                horizontal = 12.dp,
-                                vertical = 8.dp
-                            ),
-                            color = QuitGreen,
-                            textAlign = TextAlign.Center
+                            modifier =
+                                Modifier.padding(
+                                    horizontal = 12.dp,
+                                    vertical = 8.dp
+                                ),
+                            color =
+                                QuitGreen,
+                            textAlign =
+                                TextAlign.Center
                         )
                     }
 
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        modifier =
+                            Modifier.fillMaxWidth(),
+
+                        horizontalArrangement =
+                            Arrangement.spacedBy(10.dp)
                     ) {
+
                         StatBox(
-                            modifier = Modifier.weight(1f),
-                            title = "Cigarettes logged",
-                            value = smoked.size.toString()
+                            modifier =
+                                Modifier.weight(1f),
+                            title =
+                                "Cigarettes logged",
+                            value =
+                                smoked.size.toString()
                         )
 
                         StatBox(
-                            modifier = Modifier.weight(1f),
-                            title = "Cravings logged",
-                            value = cravings.size.toString()
+                            modifier =
+                                Modifier.weight(1f),
+                            title =
+                                "Cravings logged",
+                            value =
+                                cravings.size.toString()
                         )
                     }
                 }
@@ -1180,19 +2378,30 @@ fun StatsScreen(
         }
 
         item {
+
             AppCard {
+
                 Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(18.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                    modifier =
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(18.dp),
+
+                    horizontalAlignment =
+                        Alignment.CenterHorizontally,
+
+                    verticalArrangement =
+                        Arrangement.spacedBy(12.dp)
                 ) {
+
                     Text(
                         "Craving insights",
-                        modifier = Modifier.fillMaxWidth(),
-                        fontWeight = FontWeight.Bold,
-                        textAlign = TextAlign.Center
+                        modifier =
+                            Modifier.fillMaxWidth(),
+                        fontWeight =
+                            FontWeight.Bold,
+                        textAlign =
+                            TextAlign.Center
                     )
 
                     StatRow(
@@ -1209,58 +2418,88 @@ fun StatsScreen(
         }
 
         item {
+
             AppCard {
+
                 Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(18.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                    modifier =
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(18.dp),
+
+                    horizontalAlignment =
+                        Alignment.CenterHorizontally,
+
+                    verticalArrangement =
+                        Arrangement.spacedBy(12.dp)
                 ) {
+
                     Text(
                         "How cigarettes were obtained",
-                        modifier = Modifier.fillMaxWidth(),
-                        fontWeight = FontWeight.Bold,
-                        textAlign = TextAlign.Center
+                        modifier =
+                            Modifier.fillMaxWidth(),
+                        fontWeight =
+                            FontWeight.Bold,
+                        textAlign =
+                            TextAlign.Center
                     )
 
                     StatRow(
                         "Bought",
-                        smoked.count { it.source == "Bought" }.toString()
+                        smoked.count {
+                            it.source == "Bought"
+                        }.toString()
                     )
 
                     StatRow(
                         "Offered",
-                        smoked.count { it.source == "Offered" }.toString()
+                        smoked.count {
+                            it.source == "Offered"
+                        }.toString()
                     )
 
                     StatRow(
                         "Asked for",
-                        smoked.count { it.source == "Asked for" }.toString()
+                        smoked.count {
+                            it.source == "Asked for"
+                        }.toString()
                     )
 
                     StatRow(
                         "Other",
-                        smoked.count { it.source == "Other" }.toString()
+                        smoked.count {
+                            it.source == "Other"
+                        }.toString()
                     )
                 }
             }
         }
 
         item {
+
             AppCard {
+
                 Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(18.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                    modifier =
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(18.dp),
+
+                    horizontalAlignment =
+                        Alignment.CenterHorizontally,
+
+                    verticalArrangement =
+                        Arrangement.spacedBy(8.dp)
                 ) {
+
                     Text(
                         "Progress",
-                        modifier = Modifier.fillMaxWidth(),
-                        fontWeight = FontWeight.Bold,
-                        textAlign = TextAlign.Center
+                        modifier =
+                            Modifier.fillMaxWidth(),
+                        fontWeight =
+                            FontWeight.Bold,
+                        textAlign =
+                            TextAlign.Center
                     )
 
                     Text(
@@ -1268,24 +2507,40 @@ fun StatsScreen(
                             "Your tracking journey starts here."
                         else
                             "Keep tracking. Patterns become clearer over time.",
-                        modifier = Modifier.fillMaxWidth(),
-                        color = TextMuted,
-                        textAlign = TextAlign.Center
+
+                        modifier =
+                            Modifier.fillMaxWidth(),
+
+                        color =
+                            TextMuted,
+
+                        textAlign =
+                            TextAlign.Center
                     )
                 }
             }
         }
 
         item {
+
             ActionCard(
-                title = "Daily reviews",
-                subtitle = "View your saved daily reviews",
-                icon = "📖",
-                onClick = onDailyReviews
+                title =
+                    "Daily reviews",
+                subtitle =
+                    "View your saved daily reviews",
+                icon =
+                    "📖",
+                onClick =
+                    onDailyReviews
             )
         }
     }
 }
+
+
+/* ============================================================
+   STAT BOX
+   ============================================================ */
 
 @Composable
 fun StatBox(
@@ -1293,64 +2548,111 @@ fun StatBox(
     title: String,
     value: String
 ) {
+
     Surface(
-        modifier = modifier,
-        shape = RoundedCornerShape(14.dp),
-        color = MaterialTheme.colorScheme.background,
-        tonalElevation = 1.dp
+        modifier =
+            modifier,
+
+        shape =
+            RoundedCornerShape(14.dp),
+
+        color =
+            MaterialTheme.colorScheme.background,
+
+        tonalElevation =
+            1.dp
     ) {
+
         Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(14.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(6.dp)
+            modifier =
+                Modifier
+                    .fillMaxWidth()
+                    .padding(14.dp),
+
+            horizontalAlignment =
+                Alignment.CenterHorizontally,
+
+            verticalArrangement =
+                Arrangement.spacedBy(6.dp)
         ) {
+
             Text(
                 title,
-                modifier = Modifier.fillMaxWidth(),
-                style = MaterialTheme.typography.bodySmall,
-                color = TextMuted,
-                textAlign = TextAlign.Center
+                modifier =
+                    Modifier.fillMaxWidth(),
+                style =
+                    MaterialTheme.typography.bodySmall,
+                color =
+                    TextMuted,
+                textAlign =
+                    TextAlign.Center
             )
 
             Text(
                 value,
-                modifier = Modifier.fillMaxWidth(),
-                style = MaterialTheme.typography.headlineMedium,
-                fontWeight = FontWeight.Bold,
-                color = QuitGreen,
-                textAlign = TextAlign.Center
+                modifier =
+                    Modifier.fillMaxWidth(),
+                style =
+                    MaterialTheme.typography.headlineMedium,
+                fontWeight =
+                    FontWeight.Bold,
+                color =
+                    QuitGreen,
+                textAlign =
+                    TextAlign.Center
             )
         }
     }
 }
+
+
+/* ============================================================
+   STAT ROW
+   ============================================================ */
 
 @Composable
 fun StatRow(
     label: String,
     value: String
 ) {
+
     Column(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(2.dp)
+        modifier =
+            Modifier.fillMaxWidth(),
+
+        horizontalAlignment =
+            Alignment.CenterHorizontally,
+
+        verticalArrangement =
+            Arrangement.spacedBy(2.dp)
     ) {
+
         Text(
             label,
-            modifier = Modifier.fillMaxWidth(),
-            textAlign = TextAlign.Center
+            modifier =
+                Modifier.fillMaxWidth(),
+            textAlign =
+                TextAlign.Center
         )
 
         Text(
             value,
-            modifier = Modifier.fillMaxWidth(),
-            fontWeight = FontWeight.Bold,
-            color = QuitGreen,
-            textAlign = TextAlign.Center
+            modifier =
+                Modifier.fillMaxWidth(),
+            fontWeight =
+                FontWeight.Bold,
+            color =
+                QuitGreen,
+            textAlign =
+                TextAlign.Center
         )
     }
 }
+
+
+/* ============================================================
+   SETTINGS SCREEN
+   ============================================================ */
 
 @Composable
 fun SettingsScreen(
@@ -1360,64 +2662,131 @@ fun SettingsScreen(
     onReset: () -> Unit,
     onImport: (Long, List<LogEntry>) -> Unit
 ) {
-    var showReset by remember { mutableStateOf(false) }
-    var showObjective by remember { mutableStateOf(false) }
 
-    val context = LocalContext.current
-    val prefs = context.getSharedPreferences(
-        "quit_track",
-        android.content.Context.MODE_PRIVATE
-    )
+    var showReset by remember {
+        mutableStateOf(false)
+    }
+
+    var showObjective by remember {
+        mutableStateOf(false)
+    }
+
+    val context =
+        LocalContext.current
+
+    val prefs =
+        context.getSharedPreferences(
+            PREFS_NAME,
+            android.content.Context.MODE_PRIVATE
+        )
 
     var objective by remember {
+
         mutableStateOf(
-            prefs.getString("objective", "Reduce gradually")
-                ?: "Reduce gradually"
+            prefs.getString(
+                "objective",
+                "Reduce gradually"
+            ) ?: "Reduce gradually"
         )
     }
 
     var cigarettesPerDay by remember {
+
         mutableStateOf(
-            prefs.getInt("cigarettesPerDay", 8).toString()
+            prefs.getInt(
+                "cigarettesPerDay",
+                8
+            ).toString()
         )
     }
 
     var morningCigarettes by remember {
+
         mutableStateOf(
-            prefs.getInt("morningCigarettes", 3).toString()
+            prefs.getInt(
+                "morningCigarettes",
+                3
+            ).toString()
         )
     }
 
-    var savedMessage by remember { mutableStateOf(false) }
+    var savedMessage by remember {
+        mutableStateOf(false)
+    }
 
     val exportLauncher =
         rememberLauncherForActivityResult(
-            ActivityResultContracts.CreateDocument("application/json")
+            ActivityResultContracts.CreateDocument(
+                "application/json"
+            )
         ) { uri ->
+
             if (uri != null) {
-                val root = JSONObject()
 
-                root.put("startDate", startDate)
+                val root =
+                    JSONObject()
 
-                val array = JSONArray()
+                root.put(
+                    "startDate",
+                    startDate
+                )
+
+                val array =
+                    JSONArray()
 
                 entries.forEach { e ->
+
                     array.put(
                         JSONObject().apply {
-                            put("type", e.type)
-                            put("time", e.time)
-                            put("intensity", e.intensity)
-                            put("source", e.source)
-                            put("context", e.context)
+
+                            put(
+                                "type",
+                                e.type
+                            )
+
+                            put(
+                                "time",
+                                e.time
+                            )
+
+                            put(
+                                "intensity",
+                                e.intensity
+                            )
+
+                            put(
+                                "source",
+                                e.source
+                            )
+
+                            put(
+                                "context",
+                                e.context
+                            )
+
+                            put(
+                                "morning",
+                                e.morning
+                            )
                         }
                     )
                 }
 
-                root.put("entries", array)
+                root.put(
+                    "entries",
+                    array
+                )
 
-                context.contentResolver.openOutputStream(uri)?.use {
-                    it.write(root.toString(2).toByteArray())
-                }
+                context
+                    .contentResolver
+                    .openOutputStream(uri)
+                    ?.use {
+                        it.write(
+                            root
+                                .toString(2)
+                                .toByteArray()
+                        )
+                    }
             }
         }
 
@@ -1425,34 +2794,69 @@ fun SettingsScreen(
         rememberLauncherForActivityResult(
             ActivityResultContracts.OpenDocument()
         ) { uri ->
+
             if (uri != null) {
+
                 try {
-                    val json = context.contentResolver
-                        .openInputStream(uri)
-                        ?.bufferedReader()
-                        ?.use { it.readText() }
+
+                    val json =
+                        context
+                            .contentResolver
+                            .openInputStream(uri)
+                            ?.bufferedReader()
+                            ?.use {
+                                it.readText()
+                            }
 
                     if (json != null) {
-                        val root = JSONObject(json)
+
+                        val root =
+                            JSONObject(json)
 
                         val importedStart =
-                            root.optLong("startDate", startDate)
+                            root.optLong(
+                                "startDate",
+                                startDate
+                            )
 
                         val array =
-                            root.optJSONArray("entries") ?: JSONArray()
+                            root.optJSONArray(
+                                "entries"
+                            ) ?: JSONArray()
 
                         val importedEntries =
                             buildList {
-                                for (i in 0 until array.length()) {
-                                    val o = array.getJSONObject(i)
+
+                                for (
+                                    i in 0 until array.length()
+                                ) {
+
+                                    val o =
+                                        array.getJSONObject(
+                                            i
+                                        )
 
                                     add(
                                         LogEntry(
-                                            o.getString("type"),
-                                            o.getLong("time"),
-                                            o.optInt("intensity"),
-                                            o.optString("source"),
-                                            o.optString("context")
+                                            o.getString(
+                                                "type"
+                                            ),
+                                            o.getLong(
+                                                "time"
+                                            ),
+                                            o.optInt(
+                                                "intensity"
+                                            ),
+                                            o.optString(
+                                                "source"
+                                            ),
+                                            o.optString(
+                                                "context"
+                                            ),
+                                            o.optBoolean(
+                                                "morning",
+                                                false
+                                            )
                                         )
                                     )
                                 }
@@ -1463,6 +2867,7 @@ fun SettingsScreen(
                             importedEntries
                         )
                     }
+
                 } catch (_: Exception) {
                     // Invalid import files are ignored.
                 }
@@ -1470,141 +2875,248 @@ fun SettingsScreen(
         }
 
     LazyColumn(
-        modifier = m.fillMaxSize(),
-        contentPadding = PaddingValues(
-            start = 20.dp,
-            end = 20.dp,
-            top = 24.dp,
-            bottom = 24.dp
-        ),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
+        modifier =
+            m.fillMaxSize(),
+
+        contentPadding =
+            PaddingValues(
+                start = 20.dp,
+                end = 20.dp,
+                top = 24.dp,
+                bottom = 24.dp
+            ),
+
+        verticalArrangement =
+            Arrangement.spacedBy(14.dp)
     ) {
 
         item {
+
             Text(
                 "Settings",
-                modifier = Modifier.fillMaxWidth(),
-                style = MaterialTheme.typography.headlineSmall,
-                fontWeight = FontWeight.Bold,
-                color = QuitGreen,
-                textAlign = TextAlign.Center
+                modifier =
+                    Modifier.fillMaxWidth(),
+                style =
+                    MaterialTheme.typography.headlineSmall,
+                fontWeight =
+                    FontWeight.Bold,
+                color =
+                    QuitGreen,
+                textAlign =
+                    TextAlign.Center
             )
         }
 
         item {
-            SettingsSectionTitle("GOALS & TARGETS")
+
+            SettingsSectionTitle(
+                "GOALS & TARGETS"
+            )
 
             AppCard {
+
                 Column {
+
                     SettingsRow(
-                        icon = "🎯",
-                        title = "Objective",
-                        subtitle = objective,
-                        onClick = { showObjective = true }
+                        icon =
+                            "🎯",
+                        title =
+                            "Objective",
+                        subtitle =
+                            objective,
+                        onClick = {
+                            showObjective = true
+                        }
                     )
 
                     Divider()
 
                     Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(16.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                        modifier =
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(16.dp),
+
+                        horizontalAlignment =
+                            Alignment.CenterHorizontally,
+
+                        verticalArrangement =
+                            Arrangement.spacedBy(10.dp)
                     ) {
+
                         Text(
                             "Daily cigarette limit",
-                            modifier = Modifier.fillMaxWidth(),
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.SemiBold,
-                            textAlign = TextAlign.Center
+                            modifier =
+                                Modifier.fillMaxWidth(),
+                            style =
+                                MaterialTheme.typography.titleMedium,
+                            fontWeight =
+                                FontWeight.SemiBold,
+                            textAlign =
+                                TextAlign.Center
                         )
 
                         Text(
                             "Maximum cigarettes permitted per day",
-                            modifier = Modifier.fillMaxWidth(),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = TextMuted,
-                            textAlign = TextAlign.Center
+                            modifier =
+                                Modifier.fillMaxWidth(),
+                            style =
+                                MaterialTheme.typography.bodySmall,
+                            color =
+                                TextMuted,
+                            textAlign =
+                                TextAlign.Center
                         )
 
                         OutlinedTextField(
-    value = cigarettesPerDay,
-    onValueChange = {
-        if (it.length <= 3 && it.all { c -> c.isDigit() }) {
-            cigarettesPerDay = it
-        }
-    },
-    modifier = Modifier.fillMaxWidth(),
-    singleLine = true,
-    textStyle = LocalTextStyle.current.copy(
-        textAlign = TextAlign.Center
-    ),
-    label = {
-        Text(
-            "Cigarettes per day",
-            modifier = Modifier.fillMaxWidth(),
-            textAlign = TextAlign.Center
-        )
-    }
-)
+                            value =
+                                cigarettesPerDay,
+
+                            onValueChange = {
+
+                                if (
+                                    it.length <= 3 &&
+                                    it.all {
+                                        c -> c.isDigit()
+                                    }
+                                ) {
+                                    cigarettesPerDay =
+                                        it
+                                }
+                            },
+
+                            modifier =
+                                Modifier.fillMaxWidth(),
+
+                            singleLine = true,
+
+                            textStyle =
+                                LocalTextStyle.current.copy(
+                                    textAlign =
+                                        TextAlign.Center
+                                ),
+
+                            label = {
+
+                                Text(
+                                    "Cigarettes per day",
+                                    modifier =
+                                        Modifier.fillMaxWidth(),
+                                    textAlign =
+                                        TextAlign.Center
+                                )
+                            }
+                        )
 
                         OutlinedTextField(
-    value = morningCigarettes,
-    onValueChange = {
-        if (it.length <= 2 && it.all { c -> c.isDigit() }) {
-            morningCigarettes = it
-        }
-    },
-    modifier = Modifier.fillMaxWidth(),
-    singleLine = true,
-    textStyle = LocalTextStyle.current.copy(
-        textAlign = TextAlign.Center
-    ),
-    label = {
-        Text(
-            "Morning cigarettes",
-            modifier = Modifier.fillMaxWidth(),
-            textAlign = TextAlign.Center
-        )
-    }
-)
+                            value =
+                                morningCigarettes,
+
+                            onValueChange = {
+
+                                if (
+                                    it.length <= 2 &&
+                                    it.all {
+                                        c -> c.isDigit()
+                                    }
+                                ) {
+                                    morningCigarettes =
+                                        it
+                                }
+                            },
+
+                            modifier =
+                                Modifier.fillMaxWidth(),
+
+                            singleLine = true,
+
+                            textStyle =
+                                LocalTextStyle.current.copy(
+                                    textAlign =
+                                        TextAlign.Center
+                                ),
+
+                            label = {
+
+                                Text(
+                                    "Morning cigarettes",
+                                    modifier =
+                                        Modifier.fillMaxWidth(),
+                                    textAlign =
+                                        TextAlign.Center
+                                )
+                            }
+                        )
 
                         Button(
                             onClick = {
-                                val daily = cigarettesPerDay.toIntOrNull()
-                                    ?.coerceIn(0, 100) ?: 8
 
-                                val morning = morningCigarettes.toIntOrNull()
-                                    ?.coerceIn(0, 50) ?: 3
+                                val daily =
+                                    cigarettesPerDay
+                                        .toIntOrNull()
+                                        ?.coerceIn(
+                                            0,
+                                            100
+                                        ) ?: 8
 
-                                cigarettesPerDay = daily.toString()
-                                morningCigarettes = morning.toString()
+                                val morning =
+                                    morningCigarettes
+                                        .toIntOrNull()
+                                        ?.coerceIn(
+                                            0,
+                                            50
+                                        ) ?: 3
+
+                                cigarettesPerDay =
+                                    daily.toString()
+
+                                morningCigarettes =
+                                    morning.toString()
 
                                 prefs.edit()
-                                    .putString("objective", objective)
-                                    .putInt("cigarettesPerDay", daily)
-                                    .putInt("morningCigarettes", morning)
+                                    .putString(
+                                        "objective",
+                                        objective
+                                    )
+                                    .putInt(
+                                        "cigarettesPerDay",
+                                        daily
+                                    )
+                                    .putInt(
+                                        "morningCigarettes",
+                                        morning
+                                    )
                                     .apply()
 
-                                savedMessage = true
+                                savedMessage =
+                                    true
                             },
-                            modifier = Modifier.fillMaxWidth()
+
+                            modifier =
+                                Modifier.fillMaxWidth()
                         ) {
+
                             Text(
                                 "Save targets",
-                                textAlign = TextAlign.Center
+                                textAlign =
+                                    TextAlign.Center
                             )
                         }
 
                         if (savedMessage) {
+
                             Text(
                                 "Targets saved",
-                                modifier = Modifier.fillMaxWidth(),
-                                color = QuitGreen,
-                                style = MaterialTheme.typography.bodySmall,
-                                fontWeight = FontWeight.SemiBold,
-                                textAlign = TextAlign.Center
+                                modifier =
+                                    Modifier.fillMaxWidth(),
+                                color =
+                                    QuitGreen,
+                                style =
+                                    MaterialTheme.typography.bodySmall,
+                                fontWeight =
+                                    FontWeight.SemiBold,
+                                textAlign =
+                                    TextAlign.Center
                             )
                         }
                     }
@@ -1613,6 +3125,7 @@ fun SettingsScreen(
         }
 
         item {
+
             AppCard {
                 Column {
                 }
@@ -1620,28 +3133,25 @@ fun SettingsScreen(
         }
 
         item {
-            SettingsSectionTitle("DATA")
+
+            SettingsSectionTitle(
+                "DATA"
+            )
 
             AppCard {
+
                 Column {
-                    SettingsRow(
-                        icon = "⇩",
-                        title = "Export my data",
-                        subtitle = "Save a copy of your data",
-                        onClick = {
-                            exportLauncher.launch("quit-track-backup.json")
-                        }
-                    )
-
-                    Divider()
 
                     SettingsRow(
-                        icon = "⇧",
-                        title = "Import my data",
-                        subtitle = "Restore data from a file",
+                        icon =
+                            "⇩",
+                        title =
+                            "Export my data",
+                        subtitle =
+                            "Save a copy of your data",
                         onClick = {
-                            importLauncher.launch(
-                                arrayOf("application/json")
+                            exportLauncher.launch(
+                                "quit-track-backup.json"
                             )
                         }
                     )
@@ -1649,25 +3159,58 @@ fun SettingsScreen(
                     Divider()
 
                     SettingsRow(
-                        icon = "⌫",
-                        title = "Delete all my data",
-                        subtitle = "Permanently delete your local data",
-                        titleColor = MaterialTheme.colorScheme.error,
-                        onClick = { showReset = true }
+                        icon =
+                            "⇧",
+                        title =
+                            "Import my data",
+                        subtitle =
+                            "Restore data from a file",
+                        onClick = {
+
+                            importLauncher.launch(
+                                arrayOf(
+                                    "application/json"
+                                )
+                            )
+                        }
+                    )
+
+                    Divider()
+
+                    SettingsRow(
+                        icon =
+                            "⌫",
+                        title =
+                            "Delete all my data",
+                        subtitle =
+                            "Permanently delete your local data",
+                        titleColor =
+                            MaterialTheme.colorScheme.error,
+                        onClick = {
+                            showReset = true
+                        }
                     )
                 }
             }
         }
 
         item {
-            SettingsSectionTitle("INFO")
+
+            SettingsSectionTitle(
+                "INFO"
+            )
 
             AppCard {
+
                 Column {
-                   SettingsRow(
-                        icon = "#",
-                        title = "Version",
-                        subtitle = "unicus",
+
+                    SettingsRow(
+                        icon =
+                            "#",
+                        title =
+                            "Version",
+                        subtitle =
+                            "unicus",
                         onClick = {}
                     )
                 }
@@ -1675,26 +3218,37 @@ fun SettingsScreen(
         }
 
         item {
+
             Text(
                 "Start date: ${fmtDate(startDate)}",
-                modifier = Modifier.fillMaxWidth(),
-                color = TextMuted,
-                style = MaterialTheme.typography.bodySmall,
-                textAlign = TextAlign.Center
+                modifier =
+                    Modifier.fillMaxWidth(),
+                color =
+                    TextMuted,
+                style =
+                    MaterialTheme.typography.bodySmall,
+                textAlign =
+                    TextAlign.Center
             )
         }
     }
 
     if (showObjective) {
+
         AlertDialog(
+
             onDismissRequest = {
                 showObjective = false
             },
+
             title = {
                 Text("Objective")
             },
+
             text = {
+
                 Column {
+
                     listOf(
                         "Quit completely",
                         "Reduce gradually",
@@ -1702,63 +3256,123 @@ fun SettingsScreen(
                     ).forEach { option ->
 
                         Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    objective = option
-                                    showObjective = false
-                                    savedMessage = false
-                                }
-                                .padding(vertical = 12.dp),
-                            verticalAlignment = Alignment.CenterVertically
+                            modifier =
+                                Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+
+                                        objective =
+                                            option
+
+                                        showObjective =
+                                            false
+
+                                        savedMessage =
+                                            false
+                                    }
+                                    .padding(
+                                        vertical = 12.dp
+                                    ),
+
+                            verticalAlignment =
+                                Alignment.CenterVertically
                         ) {
+
                             RadioButton(
-                                selected = objective == option,
+                                selected =
+                                    objective ==
+                                            option,
+
                                 onClick = {
-                                    objective = option
-                                    showObjective = false
-                                    savedMessage = false
+
+                                    objective =
+                                        option
+
+                                    showObjective =
+                                        false
+
+                                    savedMessage =
+                                        false
                                 }
                             )
 
-                            Spacer(Modifier.width(8.dp))
+                            Spacer(
+                                Modifier.width(8.dp)
+                            )
 
-                            Text(option)
+                            Text(
+                                option
+                            )
                         }
                     }
                 }
             },
+
             confirmButton = {}
         )
     }
 
     if (showReset) {
+
         AlertDialog(
+
             onDismissRequest = {
                 showReset = false
             },
+
             title = {
-                Text("Delete everything?")
+                Text(
+                    "Delete everything?"
+                )
             },
+
             text = {
+
                 Text(
                     "This permanently deletes locally stored entries and restarts the plan at Day 1."
                 )
             },
+
             confirmButton = {
+
                 TextButton(
+
                     onClick = {
+
                         onReset()
+
+                        /*
+                         * Also clear the manual-review flag
+                         * so the new tracking period starts clean.
+                         */
+                        prefs.edit()
+                            .remove(
+                                MANUAL_REVIEW_SAVED_DATE
+                            )
+                            .apply()
+
+                        /*
+                         * Make sure the review alarm continues
+                         * for the newly restarted plan.
+                         */
+                        scheduleDailyReview(
+                            context
+                        )
+
                         showReset = false
                     }
                 ) {
+
                     Text(
                         "Delete",
-                        color = MaterialTheme.colorScheme.error
+                        color =
+                            MaterialTheme.colorScheme.error
                     )
                 }
             },
+
             dismissButton = {
+
                 TextButton(
                     onClick = {
                         showReset = false
@@ -1771,68 +3385,121 @@ fun SettingsScreen(
     }
 }
 
+
+/* ============================================================
+   SETTINGS SECTION TITLE
+   ============================================================ */
+
 @Composable
 fun SettingsSectionTitle(
     text: String
 ) {
+
     Text(
         text,
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(
-                start = 4.dp,
-                bottom = 4.dp
-            ),
-        style = MaterialTheme.typography.labelMedium,
-        fontWeight = FontWeight.Bold,
-        color = QuitGreen,
-        textAlign = TextAlign.Center
+
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .padding(
+                    start = 4.dp,
+                    bottom = 4.dp
+                ),
+
+        style =
+            MaterialTheme.typography.labelMedium,
+
+        fontWeight =
+            FontWeight.Bold,
+
+        color =
+            QuitGreen,
+
+        textAlign =
+            TextAlign.Center
     )
 }
+
+
+/* ============================================================
+   SETTINGS ROW
+   ============================================================ */
 
 @Composable
 fun SettingsRow(
     icon: String,
     title: String,
     subtitle: String,
-    titleColor: androidx.compose.ui.graphics.Color = MaterialTheme.colorScheme.onSurface,
+    titleColor:
+        androidx.compose.ui.graphics.Color =
+            MaterialTheme.colorScheme.onSurface,
     onClick: () -> Unit
 ) {
+
     Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable { onClick() }
-            .padding(16.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(5.dp)
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .clickable {
+                    onClick()
+                }
+                .padding(16.dp),
+
+        horizontalAlignment =
+            Alignment.CenterHorizontally,
+
+        verticalArrangement =
+            Arrangement.spacedBy(5.dp)
     ) {
+
         Text(
             icon,
-            fontSize = 21.sp,
-            color = if (titleColor == MaterialTheme.colorScheme.error)
-                titleColor
-            else
-                QuitGreen,
-            textAlign = TextAlign.Center
+            fontSize =
+                21.sp,
+
+            color =
+                if (
+                    titleColor ==
+                    MaterialTheme.colorScheme.error
+                )
+                    titleColor
+                else
+                    QuitGreen,
+
+            textAlign =
+                TextAlign.Center
         )
 
         Text(
             title,
-            modifier = Modifier.fillMaxWidth(),
-            fontWeight = FontWeight.SemiBold,
-            color = titleColor,
-            textAlign = TextAlign.Center
+            modifier =
+                Modifier.fillMaxWidth(),
+            fontWeight =
+                FontWeight.SemiBold,
+            color =
+                titleColor,
+            textAlign =
+                TextAlign.Center
         )
 
         Text(
             subtitle,
-            modifier = Modifier.fillMaxWidth(),
-            color = TextMuted,
-            style = MaterialTheme.typography.bodySmall,
-            textAlign = TextAlign.Center
+            modifier =
+                Modifier.fillMaxWidth(),
+            color =
+                TextMuted,
+            style =
+                MaterialTheme.typography.bodySmall,
+            textAlign =
+                TextAlign.Center
         )
     }
 }
+
+
+/* ============================================================
+   ENTRIES SCREEN
+   ============================================================ */
 
 @Composable
 fun EntriesScreen(
@@ -1840,102 +3507,165 @@ fun EntriesScreen(
     entries: List<LogEntry>,
     onBack: () -> Unit
 ) {
+
     LazyColumn(
-        modifier = m.fillMaxSize(),
-        contentPadding = PaddingValues(
-            start = 20.dp,
-            end = 20.dp,
-            top = 24.dp,
-            bottom = 24.dp
-        ),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
+        modifier =
+            m.fillMaxSize(),
+
+        contentPadding =
+            PaddingValues(
+                start = 20.dp,
+                end = 20.dp,
+                top = 24.dp,
+                bottom = 24.dp
+            ),
+
+        verticalArrangement =
+            Arrangement.spacedBy(10.dp)
     ) {
 
         item {
+
             Box(
-                modifier = Modifier.fillMaxWidth(),
-                contentAlignment = Alignment.Center
+                modifier =
+                    Modifier.fillMaxWidth(),
+
+                contentAlignment =
+                    Alignment.Center
             ) {
-                TextButton(onClick = onBack) {
+
+                TextButton(
+                    onClick =
+                        onBack
+                ) {
+
                     Text(
                         "‹ Back",
-                        textAlign = TextAlign.Center
+                        textAlign =
+                            TextAlign.Center
                     )
                 }
             }
         }
 
         item {
+
             Text(
                 "All entries",
-                modifier = Modifier.fillMaxWidth(),
-                style = MaterialTheme.typography.headlineSmall,
-                fontWeight = FontWeight.Bold,
-                textAlign = TextAlign.Center
+                modifier =
+                    Modifier.fillMaxWidth(),
+                style =
+                    MaterialTheme.typography.headlineSmall,
+                fontWeight =
+                    FontWeight.Bold,
+                textAlign =
+                    TextAlign.Center
             )
         }
 
         if (entries.isEmpty()) {
+
             item {
+
                 AppCard {
+
                     Text(
                         "No entries yet.",
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(20.dp),
-                        color = TextMuted,
-                        textAlign = TextAlign.Center
+                        modifier =
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(20.dp),
+                        color =
+                            TextMuted,
+                        textAlign =
+                            TextAlign.Center
                     )
                 }
             }
         }
 
         items(
-            entries.sortedByDescending { it.time }
+            entries.sortedByDescending {
+                it.time
+            }
         ) { e ->
 
             AppCard {
+
                 Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(5.dp)
+                    modifier =
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+
+                    horizontalAlignment =
+                        Alignment.CenterHorizontally,
+
+                    verticalArrangement =
+                        Arrangement.spacedBy(5.dp)
                 ) {
+
                     Text(
-                        if (e.type == "SMOKED")
+                        if (
+                            e.type ==
+                            "SMOKED"
+                        )
                             "🚬  Smoked"
                         else
                             "🔥  Craving",
-                        fontWeight = FontWeight.Bold,
-                        textAlign = TextAlign.Center
+
+                        fontWeight =
+                            FontWeight.Bold,
+
+                        textAlign =
+                            TextAlign.Center
                     )
 
                     Text(
-                        fmtDateTime(e.time),
-                        color = TextMuted,
-                        style = MaterialTheme.typography.bodySmall,
-                        textAlign = TextAlign.Center
+                        fmtDateTime(
+                            e.time
+                        ),
+
+                        color =
+                            TextMuted,
+
+                        style =
+                            MaterialTheme.typography.bodySmall,
+
+                        textAlign =
+                            TextAlign.Center
                     )
 
-                    if (e.source.isNotBlank()) {
+                    if (
+                        e.source.isNotBlank()
+                    ) {
+
                         Text(
                             "Source: ${e.source}",
-                            textAlign = TextAlign.Center
+                            textAlign =
+                                TextAlign.Center
                         )
                     }
 
-                    if (e.intensity > 0) {
+                    if (
+                        e.intensity > 0
+                    ) {
+
                         Text(
                             "Intensity: ${e.intensity}/10",
-                            textAlign = TextAlign.Center
+                            textAlign =
+                                TextAlign.Center
                         )
                     }
 
-                    if (e.context.isNotBlank()) {
+                    if (
+                        e.context.isNotBlank()
+                    ) {
+
                         Text(
                             "Context: ${e.context}",
-                            textAlign = TextAlign.Center
+                            textAlign =
+                                TextAlign.Center
                         )
                     }
                 }
@@ -1944,22 +3674,40 @@ fun EntriesScreen(
     }
 }
 
+
+/* ============================================================
+   EMERGENCY SCREEN
+   ============================================================ */
+
 @Composable
 fun EmergencyScreen(
     m: Modifier,
     onBack: () -> Unit
 ) {
+
     var seconds by remember {
-        mutableIntStateOf(600)
+        mutableIntStateOf(
+            600
+        )
     }
 
     var running by remember {
-        mutableStateOf(false)
+        mutableStateOf(
+            false
+        )
     }
 
     LaunchedEffect(running) {
-        while (running && seconds > 0) {
-            kotlinx.coroutines.delay(1000)
+
+        while (
+            running &&
+            seconds > 0
+        ) {
+
+            kotlinx.coroutines.delay(
+                1000
+            )
+
             seconds--
         }
 
@@ -1969,25 +3717,43 @@ fun EmergencyScreen(
     }
 
     Column(
-        modifier = m
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(20.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(18.dp)
+        modifier =
+            m
+                .fillMaxSize()
+                .verticalScroll(
+                    rememberScrollState()
+                )
+                .padding(20.dp),
+
+        horizontalAlignment =
+            Alignment.CenterHorizontally,
+
+        verticalArrangement =
+            Arrangement.spacedBy(18.dp)
     ) {
 
         Row(
-            modifier = Modifier.fillMaxWidth()
+            modifier =
+                Modifier.fillMaxWidth()
         ) {
+
             Box(
-                modifier = Modifier.fillMaxWidth(),
-                contentAlignment = Alignment.Center
+                modifier =
+                    Modifier.fillMaxWidth(),
+
+                contentAlignment =
+                    Alignment.Center
             ) {
-                TextButton(onClick = onBack) {
+
+                TextButton(
+                    onClick =
+                        onBack
+                ) {
+
                     Text(
                         "‹ Back",
-                        textAlign = TextAlign.Center
+                        textAlign =
+                            TextAlign.Center
                     )
                 }
             }
@@ -1995,21 +3761,28 @@ fun EmergencyScreen(
 
         Text(
             "🔥",
-            fontSize = 48.sp,
-            textAlign = TextAlign.Center
+            fontSize =
+                48.sp,
+            textAlign =
+                TextAlign.Center
         )
 
         Text(
             "Emergency craving help",
-            style = MaterialTheme.typography.headlineSmall,
-            fontWeight = FontWeight.Bold,
-            textAlign = TextAlign.Center
+            style =
+                MaterialTheme.typography.headlineSmall,
+            fontWeight =
+                FontWeight.Bold,
+            textAlign =
+                TextAlign.Center
         )
 
         Text(
             "Delay the decision. Move away from cigarettes. Drink water. Distract yourself. Reassess.",
-            textAlign = TextAlign.Center,
-            color = TextMuted
+            textAlign =
+                TextAlign.Center,
+            color =
+                TextMuted
         )
 
         Text(
@@ -2017,122 +3790,221 @@ fun EmergencyScreen(
                 seconds / 60,
                 seconds % 60
             ),
-            style = MaterialTheme.typography.displayMedium,
-            fontWeight = FontWeight.Bold,
-            color = QuitGreen,
-            textAlign = TextAlign.Center
+
+            style =
+                MaterialTheme.typography.displayMedium,
+
+            fontWeight =
+                FontWeight.Bold,
+
+            color =
+                QuitGreen,
+
+            textAlign =
+                TextAlign.Center
         )
 
         Button(
+
             onClick = {
                 running = !running
             },
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(56.dp),
-            shape = RoundedCornerShape(16.dp)
+
+            modifier =
+                Modifier
+                    .fillMaxWidth()
+                    .height(56.dp),
+
+            shape =
+                RoundedCornerShape(16.dp)
         ) {
+
             Text(
                 if (running)
                     "Pause"
                 else
                     "Start 10-minute timer",
-                textAlign = TextAlign.Center
+
+                textAlign =
+                    TextAlign.Center
             )
         }
 
         AppCard {
+
             Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(18.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                modifier =
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(18.dp),
+
+                horizontalAlignment =
+                    Alignment.CenterHorizontally,
+
+                verticalArrangement =
+                    Arrangement.spacedBy(8.dp)
             ) {
+
                 Text(
                     "While you wait",
-                    fontWeight = FontWeight.Bold,
-                    textAlign = TextAlign.Center
+                    fontWeight =
+                        FontWeight.Bold,
+                    textAlign =
+                        TextAlign.Center
                 )
 
                 Text(
                     "• Move somewhere cigarettes aren't available.",
-                    textAlign = TextAlign.Center
+                    textAlign =
+                        TextAlign.Center
                 )
 
                 Text(
                     "• Drink a glass of water.",
-                    textAlign = TextAlign.Center
+                    textAlign =
+                        TextAlign.Center
                 )
 
                 Text(
                     "• Take a few slow breaths.",
-                    textAlign = TextAlign.Center
+                    textAlign =
+                        TextAlign.Center
                 )
 
                 Text(
                     "• Distract yourself for a few minutes.",
-                    textAlign = TextAlign.Center
+                    textAlign =
+                        TextAlign.Center
                 )
 
                 Text(
                     "• Reassess the craving when the timer ends.",
-                    textAlign = TextAlign.Center
+                    textAlign =
+                        TextAlign.Center
                 )
             }
         }
 
         Text(
             "After the timer: Lower / Same / Higher",
-            color = TextMuted,
-            textAlign = TextAlign.Center
+            color =
+                TextMuted,
+            textAlign =
+                TextAlign.Center
         )
     }
 }
 
+
+/* ============================================================
+   SMOKE DIALOG
+   ============================================================ */
+
 @Composable
 fun SmokeDialog(
     dismiss: () -> Unit,
-    save: (String, String, Int, Boolean) -> Unit
+    save: (
+        String,
+        String,
+        Int,
+        Boolean
+    ) -> Unit
 ) {
-    var source by remember { mutableStateOf("Bought") }
-    var context by remember { mutableStateOf("") }
-    var showContextOptions by remember { mutableStateOf(false) }
-    var intensity by remember { mutableIntStateOf(0) }
-    var morning by remember { mutableStateOf(false) }
+
+    var source by remember {
+        mutableStateOf(
+            "Bought"
+        )
+    }
+
+    var context by remember {
+        mutableStateOf("")
+    }
+
+    var showContextOptions by remember {
+        mutableStateOf(false)
+    }
+
+    var intensity by remember {
+        mutableIntStateOf(0)
+    }
+
+    var morning by remember {
+        mutableStateOf(false)
+    }
 
     AlertDialog(
-        onDismissRequest = dismiss,
-        title = { Text("I smoked") },
-        text = {
-            Column(
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                Text("How did you get it?")
 
-                listOf("Bought", "Offered", "Asked for").forEach {
+        onDismissRequest =
+            dismiss,
+
+        title = {
+            Text("I smoked")
+        },
+
+        text = {
+
+            Column(
+                verticalArrangement =
+                    Arrangement.spacedBy(10.dp)
+            ) {
+
+                Text(
+                    "How did you get it?"
+                )
+
+                listOf(
+                    "Bought",
+                    "Offered",
+                    "Asked for"
+                ).forEach {
+
                     Card(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { source = it },
-                        colors = CardDefaults.cardColors(
-                            containerColor =
-                                if (source == it)
-                                    QuitGreen.copy(alpha = 0.15f)
-                                else
-                                    MaterialTheme.colorScheme.surfaceVariant
-                        ),
-                        shape = RoundedCornerShape(14.dp)
-                    ) {
-                        Box(
-                            modifier = Modifier
+
+                        modifier =
+                            Modifier
                                 .fillMaxWidth()
-                                .padding(vertical = 16.dp),
-                            contentAlignment = Alignment.Center
+                                .clickable {
+                                    source = it
+                                },
+
+                        colors =
+                            CardDefaults.cardColors(
+                                containerColor =
+                                    if (
+                                        source == it
+                                    )
+                                        QuitGreen.copy(
+                                            alpha = 0.15f
+                                        )
+                                    else
+                                        MaterialTheme
+                                            .colorScheme
+                                            .surfaceVariant
+                            ),
+
+                        shape =
+                            RoundedCornerShape(
+                                14.dp
+                            )
+                    ) {
+
+                        Box(
+                            modifier =
+                                Modifier
+                                    .fillMaxWidth()
+                                    .padding(
+                                        vertical = 16.dp
+                                    ),
+
+                            contentAlignment =
+                                Alignment.Center
                         ) {
+
                             Text(
                                 it,
-                                textAlign = TextAlign.Center
+                                textAlign =
+                                    TextAlign.Center
                             )
                         }
                     }
@@ -2140,103 +4012,191 @@ fun SmokeDialog(
 
                 HorizontalDivider()
 
-                Text("Was this a morning cigarette?")
+                Text(
+                    "Was this a morning cigarette?"
+                )
 
                 Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { morning = true },
-                    colors = CardDefaults.cardColors(
-                        containerColor =
-                            if (morning)
-                                QuitGreen.copy(alpha = 0.15f)
-                            else
-                                MaterialTheme.colorScheme.surfaceVariant
-                    ),
-                    shape = RoundedCornerShape(14.dp)
-                ) {
-                    Box(
-                        modifier = Modifier
+
+                    modifier =
+                        Modifier
                             .fillMaxWidth()
-                            .padding(vertical = 16.dp),
-                        contentAlignment = Alignment.Center
+                            .clickable {
+                                morning = true
+                            },
+
+                    colors =
+                        CardDefaults.cardColors(
+                            containerColor =
+                                if (morning)
+                                    QuitGreen.copy(
+                                        alpha = 0.15f
+                                    )
+                                else
+                                    MaterialTheme
+                                        .colorScheme
+                                        .surfaceVariant
+                        ),
+
+                    shape =
+                        RoundedCornerShape(
+                            14.dp
+                        )
+                ) {
+
+                    Box(
+                        modifier =
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(
+                                    vertical = 16.dp
+                                ),
+
+                        contentAlignment =
+                            Alignment.Center
                     ) {
+
                         Text(
                             "Yes",
-                            textAlign = TextAlign.Center
+                            textAlign =
+                                TextAlign.Center
                         )
                     }
                 }
 
                 Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { morning = false },
-                    colors = CardDefaults.cardColors(
-                        containerColor =
-                            if (!morning)
-                                QuitGreen.copy(alpha = 0.15f)
-                            else
-                                MaterialTheme.colorScheme.surfaceVariant
-                    ),
-                    shape = RoundedCornerShape(14.dp)
-                ) {
-                    Box(
-                        modifier = Modifier
+
+                    modifier =
+                        Modifier
                             .fillMaxWidth()
-                            .padding(vertical = 16.dp),
-                        contentAlignment = Alignment.Center
+                            .clickable {
+                                morning = false
+                            },
+
+                    colors =
+                        CardDefaults.cardColors(
+                            containerColor =
+                                if (!morning)
+                                    QuitGreen.copy(
+                                        alpha = 0.15f
+                                    )
+                                else
+                                    MaterialTheme
+                                        .colorScheme
+                                        .surfaceVariant
+                        ),
+
+                    shape =
+                        RoundedCornerShape(
+                            14.dp
+                        )
+                ) {
+
+                    Box(
+                        modifier =
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(
+                                    vertical = 16.dp
+                                ),
+
+                        contentAlignment =
+                            Alignment.Center
                     ) {
+
                         Text(
                             "No",
-                            textAlign = TextAlign.Center
+                            textAlign =
+                                TextAlign.Center
                         )
                     }
                 }
 
                 Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { showContextOptions = !showContextOptions },
-                    shape = RoundedCornerShape(14.dp),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceVariant
-                    )
-                ) {
-                    Box(
-                        modifier = Modifier
+
+                    modifier =
+                        Modifier
                             .fillMaxWidth()
-                            .padding(vertical = 16.dp),
-                        contentAlignment = Alignment.Center
+                            .clickable {
+                                showContextOptions =
+                                    !showContextOptions
+                            },
+
+                    shape =
+                        RoundedCornerShape(
+                            14.dp
+                        ),
+
+                    colors =
+                        CardDefaults.cardColors(
+                            containerColor =
+                                MaterialTheme
+                                    .colorScheme
+                                    .surfaceVariant
+                        )
+                ) {
+
+                    Box(
+                        modifier =
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(
+                                    vertical = 16.dp
+                                ),
+
+                        contentAlignment =
+                            Alignment.Center
                     ) {
+
                         Text(
-                            if (context.isEmpty())
+                            if (
+                                context.isEmpty()
+                            )
                                 "Context"
                             else
-                                "$context",
-                            textAlign = TextAlign.Center
+                                context,
+
+                            textAlign =
+                                TextAlign.Center
                         )
                     }
                 }
 
                 if (showContextOptions) {
+
                     AlertDialog(
+
                         onDismissRequest = {
-                            showContextOptions = false
+                            showContextOptions =
+                                false
                         },
+
                         title = {
+
                             Text(
                                 "Context",
-                                modifier = Modifier.fillMaxWidth(),
-                                textAlign = TextAlign.Center
+                                modifier =
+                                    Modifier.fillMaxWidth(),
+                                textAlign =
+                                    TextAlign.Center
                             )
                         },
+
                         text = {
+
                             Column(
-                                modifier = Modifier.fillMaxWidth(),
-                                verticalArrangement = Arrangement.spacedBy(8.dp),
-                                horizontalAlignment = Alignment.CenterHorizontally
+                                modifier =
+                                    Modifier.fillMaxWidth(),
+
+                                verticalArrangement =
+                                    Arrangement.spacedBy(
+                                        8.dp
+                                    ),
+
+                                horizontalAlignment =
+                                    Alignment.CenterHorizontally
                             ) {
+
                                 listOf(
                                     "After waking",
                                     "Coffee",
@@ -2248,164 +4208,338 @@ fun SmokeDialog(
                                     "Alcohol",
                                     "Routine/Habit"
                                 ).forEach { option ->
+
                                     Card(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .clickable {
-                                                context = option
-                                                showContextOptions = false
-                                            },
-                                        shape = RoundedCornerShape(14.dp),
-                                        colors = CardDefaults.cardColors(
-                                            containerColor =
-                                                if (context == option)
-                                                    QuitGreen.copy(alpha = 0.15f)
-                                                else
-                                                    MaterialTheme.colorScheme.surfaceVariant
-                                        )
-                                    ) {
-                                        Box(
-                                            modifier = Modifier
+
+                                        modifier =
+                                            Modifier
                                                 .fillMaxWidth()
-                                                .padding(vertical = 14.dp),
-                                            contentAlignment = Alignment.Center
+                                                .clickable {
+
+                                                    context =
+                                                        option
+
+                                                    showContextOptions =
+                                                        false
+                                                },
+
+                                        shape =
+                                            RoundedCornerShape(
+                                                14.dp
+                                            ),
+
+                                        colors =
+                                            CardDefaults.cardColors(
+                                                containerColor =
+                                                    if (
+                                                        context ==
+                                                        option
+                                                    )
+                                                        QuitGreen.copy(
+                                                            alpha =
+                                                                0.15f
+                                                        )
+                                                    else
+                                                        MaterialTheme
+                                                            .colorScheme
+                                                            .surfaceVariant
+                                            )
+                                    ) {
+
+                                        Box(
+                                            modifier =
+                                                Modifier
+                                                    .fillMaxWidth()
+                                                    .padding(
+                                                        vertical =
+                                                            14.dp
+                                                    ),
+
+                                            contentAlignment =
+                                                Alignment.Center
                                         ) {
+
                                             Text(
                                                 option,
-                                                textAlign = TextAlign.Center
+                                                textAlign =
+                                                    TextAlign.Center
                                             )
                                         }
                                     }
                                 }
                             }
                         },
+
                         confirmButton = {}
                     )
                 }
 
                 Text(
                     "Craving: ${
-                        if (intensity == 0) "Not rated"
-                        else "$intensity/10"
+                        if (
+                            intensity == 0
+                        )
+                            "Not rated"
+                        else
+                            "$intensity/10"
                     }"
                 )
 
                 Slider(
-                    value = intensity.toFloat(),
-                    onValueChange = { intensity = it.toInt() },
-                    valueRange = 0f..10f,
-                    steps = 9
+                    value =
+                        intensity.toFloat(),
+
+                    onValueChange = {
+                        intensity =
+                            it.toInt()
+                    },
+
+                    valueRange =
+                        0f..10f,
+
+                    steps =
+                        9
                 )
             }
         },
+
         confirmButton = {
+
             TextButton(
+
                 onClick = {
-                    save(source, context, intensity, morning)
+
+                    save(
+                        source,
+                        context,
+                        intensity,
+                        morning
+                    )
                 }
             ) {
+
                 Text("Save")
             }
         },
+
         dismissButton = {
-            TextButton(onClick = dismiss) {
+
+            TextButton(
+                onClick =
+                    dismiss
+            ) {
                 Text("Cancel")
             }
         }
     )
 }
 
+
+/* ============================================================
+   CRAVING DIALOG
+   ============================================================ */
+
 @Composable
 fun CravingDialog(
     dismiss: () -> Unit,
-    save: (Int, String, Boolean) -> Unit
+    save: (
+        Int,
+        String,
+        Boolean
+    ) -> Unit
 ) {
-    var intensity by remember { mutableIntStateOf(5) }
-    var context by remember { mutableStateOf("") }
-    var morning by remember { mutableStateOf(false) }
-    var showContextDialog by remember { mutableStateOf(false) }
+
+    var intensity by remember {
+        mutableIntStateOf(5)
+    }
+
+    var context by remember {
+        mutableStateOf("")
+    }
+
+    var morning by remember {
+        mutableStateOf(false)
+    }
+
+    var showContextDialog by remember {
+        mutableStateOf(false)
+    }
 
     AlertDialog(
-        onDismissRequest = dismiss,
-        title = { Text("I have a craving") },
-        text = {
-            Column(
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                Text("Intensity: $intensity/10")
 
-                Slider(
-                    value = intensity.toFloat(),
-                    onValueChange = { intensity = it.toInt() },
-                    valueRange = 1f..10f,
-                    steps = 8
+        onDismissRequest =
+            dismiss,
+
+        title = {
+            Text(
+                "I have a craving"
+            )
+        },
+
+        text = {
+
+            Column(
+                verticalArrangement =
+                    Arrangement.spacedBy(10.dp)
+            ) {
+
+                Text(
+                    "Intensity: $intensity/10"
                 )
 
-                Text("Is this a morning craving?")
+                Slider(
+
+                    value =
+                        intensity.toFloat(),
+
+                    onValueChange = {
+                        intensity =
+                            it.toInt()
+                    },
+
+                    valueRange =
+                        1f..10f,
+
+                    steps =
+                        8
+                )
+
+                Text(
+                    "Is this a morning craving?"
+                )
 
                 Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { morning = true },
-                    shape = RoundedCornerShape(14.dp),
-                    colors = CardDefaults.cardColors(
-                        containerColor =
-                            if (morning)
-                                QuitGreen.copy(alpha = 0.15f)
-                            else
-                                MaterialTheme.colorScheme.surfaceVariant
-                    )
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 12.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text("Yes")
-                    }
-                }
 
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { morning = false },
-                    shape = RoundedCornerShape(14.dp),
-                    colors = CardDefaults.cardColors(
-                        containerColor =
-                            if (!morning)
-                                QuitGreen.copy(alpha = 0.15f)
-                            else
-                                MaterialTheme.colorScheme.surfaceVariant
-                    )
-                ) {
-                    Box(
-                        modifier = Modifier
+                    modifier =
+                        Modifier
                             .fillMaxWidth()
-                            .padding(vertical = 12.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text("No")
-                    }
-                }
+                            .clickable {
+                                morning = true
+                            },
 
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { showContextDialog = true },
-                    shape = RoundedCornerShape(14.dp),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceVariant
-                    )
+                    shape =
+                        RoundedCornerShape(
+                            14.dp
+                        ),
+
+                    colors =
+                        CardDefaults.cardColors(
+                            containerColor =
+                                if (morning)
+                                    QuitGreen.copy(
+                                        alpha = 0.15f
+                                    )
+                                else
+                                    MaterialTheme
+                                        .colorScheme
+                                        .surfaceVariant
+                        )
                 ) {
+
                     Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 12.dp),
-                        contentAlignment = Alignment.Center
+                        modifier =
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(
+                                    vertical = 12.dp
+                                ),
+
+                        contentAlignment =
+                            Alignment.Center
                     ) {
+
                         Text(
-                            if (context.isEmpty())
+                            "Yes"
+                        )
+                    }
+                }
+
+                Card(
+
+                    modifier =
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                morning = false
+                            },
+
+                    shape =
+                        RoundedCornerShape(
+                            14.dp
+                        ),
+
+                    colors =
+                        CardDefaults.cardColors(
+                            containerColor =
+                                if (!morning)
+                                    QuitGreen.copy(
+                                        alpha = 0.15f
+                                    )
+                                else
+                                    MaterialTheme
+                                        .colorScheme
+                                        .surfaceVariant
+                        )
+                ) {
+
+                    Box(
+                        modifier =
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(
+                                    vertical = 12.dp
+                                ),
+
+                        contentAlignment =
+                            Alignment.Center
+                    ) {
+
+                        Text(
+                            "No"
+                        )
+                    }
+                }
+
+                Card(
+
+                    modifier =
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                showContextDialog =
+                                    true
+                            },
+
+                    shape =
+                        RoundedCornerShape(
+                            14.dp
+                        ),
+
+                    colors =
+                        CardDefaults.cardColors(
+                            containerColor =
+                                MaterialTheme
+                                    .colorScheme
+                                    .surfaceVariant
+                        )
+                ) {
+
+                    Box(
+                        modifier =
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(
+                                    vertical = 12.dp
+                                ),
+
+                        contentAlignment =
+                            Alignment.Center
+                    ) {
+
+                        Text(
+                            if (
+                                context.isEmpty()
+                            )
                                 "Context"
                             else
                                 context
@@ -2414,38 +4548,78 @@ fun CravingDialog(
                 }
             }
         },
+
         confirmButton = {
+
             TextButton(
+
                 onClick = {
-                    save(intensity, context, morning)
+
+                    save(
+                        intensity,
+                        context,
+                        morning
+                    )
                 }
             ) {
-                Text("Save")
+
+                Text(
+                    "Save"
+                )
             }
         },
+
         dismissButton = {
-            TextButton(onClick = dismiss) {
-                Text("Cancel")
+
+            TextButton(
+                onClick =
+                    dismiss
+            ) {
+
+                Text(
+                    "Cancel"
+                )
             }
         }
     )
 
     if (showContextDialog) {
+
         AlertDialog(
-            onDismissRequest = { showContextDialog = false },
+
+            onDismissRequest = {
+                showContextDialog =
+                    false
+            },
+
             title = {
+
                 Box(
-                    modifier = Modifier.fillMaxWidth(),
-                    contentAlignment = Alignment.Center
+                    modifier =
+                        Modifier.fillMaxWidth(),
+
+                    contentAlignment =
+                        Alignment.Center
                 ) {
-                    Text("Context")
+
+                    Text(
+                        "Context"
+                    )
                 }
             },
+
             text = {
+
                 Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                    modifier =
+                        Modifier.fillMaxWidth(),
+
+                    verticalArrangement =
+                        Arrangement.spacedBy(
+                            8.dp
+                        )
                 ) {
+
                     listOf(
                         "After waking",
                         "Coffee",
@@ -2459,120 +4633,262 @@ fun CravingDialog(
                     ).forEach { option ->
 
                         Card(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    context = option
-                                    showContextDialog = false
-                                },
-                            shape = RoundedCornerShape(14.dp),
-                            colors = CardDefaults.cardColors(
-                                containerColor =
-                                    if (context == option)
-                                        QuitGreen.copy(alpha = 0.15f)
-                                    else
-                                        MaterialTheme.colorScheme.surfaceVariant
-                            )
-                        ) {
-                            Box(
-                                modifier = Modifier
+
+                            modifier =
+                                Modifier
                                     .fillMaxWidth()
-                                    .padding(vertical = 10.dp),
-                                contentAlignment = Alignment.Center
+                                    .clickable {
+
+                                        context =
+                                            option
+
+                                        showContextDialog =
+                                            false
+                                    },
+
+                            shape =
+                                RoundedCornerShape(
+                                    14.dp
+                                ),
+
+                            colors =
+                                CardDefaults.cardColors(
+                                    containerColor =
+                                        if (
+                                            context ==
+                                            option
+                                        )
+                                            QuitGreen.copy(
+                                                alpha =
+                                                    0.15f
+                                            )
+                                        else
+                                            MaterialTheme
+                                                .colorScheme
+                                                .surfaceVariant
+                                )
+                        ) {
+
+                            Box(
+                                modifier =
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .padding(
+                                            vertical =
+                                                10.dp
+                                        ),
+
+                                contentAlignment =
+                                    Alignment.Center
                             ) {
-                                Text(option)
+
+                                Text(
+                                    option
+                                )
                             }
                         }
                     }
                 }
             },
+
             confirmButton = {}
         )
     }
 }
 
-fun phaseForDay(day: Int): Int {
+
+/* ============================================================
+   PLAN HELPERS
+   ============================================================ */
+
+fun phaseForDay(
+    day: Int
+): Int {
+
     return when {
-        day == 1 -> 1
-        day == 2 -> 2
-        day == 3 -> 3
-        day in 4..36 -> 4
-        day == 37 -> 5
-        day in 38..40 -> 6
-        else -> 6
+
+        day == 1 ->
+            1
+
+        day == 2 ->
+            2
+
+        day == 3 ->
+            3
+
+        day in 4..36 ->
+            4
+
+        day == 37 ->
+            5
+
+        day in 38..40 ->
+            6
+
+        else ->
+            6
     }
 }
 
-fun phaseName(day: Int): String {
+
+fun phaseName(
+    day: Int
+): String {
+
     return when {
-        day == 1 -> "Foundation"
-        day == 2 -> "Preparation"
-        day == 3 -> "Strengthening"
-        day in 38..40 -> "Smoke-free maintenance"
-        day == 37 -> "Quit Day"
-        else -> "Building skills"
+
+        day == 1 ->
+            "Foundation"
+
+        day == 2 ->
+            "Preparation"
+
+        day == 3 ->
+            "Strengthening"
+
+        day in 38..40 ->
+            "Smoke-free maintenance"
+
+        day == 37 ->
+            "Quit Day"
+
+        else ->
+            "Building skills"
     }
 }
 
-fun planTitle(day: Int): String {
+
+fun planTitle(
+    day: Int
+): String {
+
     return when {
-        day == 1 -> "Foundation"
-        day == 2 -> "Preparation"
-        day == 3 -> "Strengthening"
-        day == 37 -> "Quit Day 🎯"
-        day in 38..40 -> "Smoke-free maintenance"
-        else -> "Building skills"
+
+        day == 1 ->
+            "Foundation"
+
+        day == 2 ->
+            "Preparation"
+
+        day == 3 ->
+            "Strengthening"
+
+        day == 37 ->
+            "Quit Day 🎯"
+
+        day in 38..40 ->
+            "Smoke-free maintenance"
+
+        else ->
+            "Building skills"
     }
 }
 
-fun planSubtitle(day: Int): String {
+
+fun planSubtitle(
+    day: Int
+): String {
+
     return when {
-        day == 1 -> "Build awareness and track your habits."
-        day == 2 -> "Understand your triggers and routines."
-        day == 3 -> "Build skills to handle cravings."
-        day == 37 -> "This is your quit day. You've got this!"
-        day in 38..40 -> "Stay strong and keep the momentum."
-        else -> "Continue working toward your quit day."
+
+        day == 1 ->
+            "Build awareness and track your habits."
+
+        day == 2 ->
+            "Understand your triggers and routines."
+
+        day == 3 ->
+            "Build skills to handle cravings."
+
+        day == 37 ->
+            "This is your quit day. You've got this!"
+
+        day in 38..40 ->
+            "Stay strong and keep the momentum."
+
+        else ->
+            "Continue working toward your quit day."
     }
 }
+
+
+/* ============================================================
+   DATE HELPERS
+   ============================================================ */
 
 fun sameDay(
     a: Long,
     b: Long
 ): Boolean {
-    val x = Calendar.getInstance().apply {
-        timeInMillis = a
-    }
 
-    val y = Calendar.getInstance().apply {
-        timeInMillis = b
-    }
+    val x =
+        Calendar.getInstance().apply {
+            timeInMillis = a
+        }
 
-    return x.get(Calendar.YEAR) == y.get(Calendar.YEAR) &&
-            x.get(Calendar.DAY_OF_YEAR) == y.get(Calendar.DAY_OF_YEAR)
+    val y =
+        Calendar.getInstance().apply {
+            timeInMillis = b
+        }
+
+    return x.get(
+        Calendar.YEAR
+    ) == y.get(
+        Calendar.YEAR
+    ) &&
+            x.get(
+                Calendar.DAY_OF_YEAR
+            ) ==
+            y.get(
+                Calendar.DAY_OF_YEAR
+            )
 }
 
-fun hour(t: Long): Int {
-    return Calendar.getInstance()
+
+fun hour(
+    t: Long
+): Int {
+
+    return Calendar
+        .getInstance()
         .apply {
             timeInMillis = t
         }
-        .get(Calendar.HOUR_OF_DAY)
+        .get(
+            Calendar.HOUR_OF_DAY
+        )
 }
 
-fun fmtDate(t: Long): String {
+
+fun fmtDate(
+    t: Long
+): String {
+
     return SimpleDateFormat(
         "yyyy-MM-dd",
         Locale.getDefault()
-    ).format(Date(t))
+    ).format(
+        Date(t)
+    )
 }
 
-fun fmtDateTime(t: Long): String {
+
+fun fmtDateTime(
+    t: Long
+): String {
+
     return SimpleDateFormat(
         "yyyy-MM-dd HH:mm",
         Locale.getDefault()
-    ).format(Date(t))
+    ).format(
+        Date(t)
+    )
 }
+
+
+/* ============================================================
+   DAILY REVIEWS SCREEN
+   ============================================================ */
 
 @Composable
 fun DailyReviewsScreen(
@@ -2580,117 +4896,182 @@ fun DailyReviewsScreen(
     reviews: List<DailyReview>,
     onBack: () -> Unit
 ) {
+
     LazyColumn(
-        modifier = m.fillMaxSize(),
-        contentPadding = PaddingValues(
-            start = 20.dp,
-            end = 20.dp,
-            top = 24.dp,
-            bottom = 24.dp
-        ),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
+        modifier =
+            m.fillMaxSize(),
+
+        contentPadding =
+            PaddingValues(
+                start = 20.dp,
+                end = 20.dp,
+                top = 24.dp,
+                bottom = 24.dp
+            ),
+
+        verticalArrangement =
+            Arrangement.spacedBy(14.dp)
     ) {
 
         item {
+
             Box(
-                modifier = Modifier.fillMaxWidth(),
-                contentAlignment = Alignment.Center
+                modifier =
+                    Modifier.fillMaxWidth(),
+
+                contentAlignment =
+                    Alignment.Center
             ) {
-                TextButton(onClick = onBack) {
+
+                TextButton(
+                    onClick =
+                        onBack
+                ) {
+
                     Text(
                         "‹ Back",
-                        textAlign = TextAlign.Center
+                        textAlign =
+                            TextAlign.Center
                     )
                 }
             }
         }
 
         item {
+
             Column(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(4.dp)
+                modifier =
+                    Modifier.fillMaxWidth(),
+
+                horizontalAlignment =
+                    Alignment.CenterHorizontally,
+
+                verticalArrangement =
+                    Arrangement.spacedBy(4.dp)
             ) {
+
                 Text(
                     "Daily reviews",
-                    modifier = Modifier.fillMaxWidth(),
-                    style = MaterialTheme.typography.headlineSmall,
-                    fontWeight = FontWeight.Bold,
-                    color = QuitGreen,
-                    textAlign = TextAlign.Center
+                    modifier =
+                        Modifier.fillMaxWidth(),
+                    style =
+                        MaterialTheme.typography.headlineSmall,
+                    fontWeight =
+                        FontWeight.Bold,
+                    color =
+                        QuitGreen,
+                    textAlign =
+                        TextAlign.Center
                 )
 
                 Text(
                     "Your saved daily summaries.",
-                    modifier = Modifier.fillMaxWidth(),
-                    color = TextMuted,
-                    textAlign = TextAlign.Center
+                    modifier =
+                        Modifier.fillMaxWidth(),
+                    color =
+                        TextMuted,
+                    textAlign =
+                        TextAlign.Center
                 )
             }
         }
 
         if (reviews.isEmpty()) {
+
             item {
+
                 AppCard {
+
                     Text(
                         "No saved reviews yet.",
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(20.dp),
-                        color = TextMuted,
-                        textAlign = TextAlign.Center
+                        modifier =
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(20.dp),
+                        color =
+                            TextMuted,
+                        textAlign =
+                            TextAlign.Center
                     )
                 }
             }
+
         } else {
+
             items(
-                reviews.sortedByDescending { it.date }
+                reviews.sortedByDescending {
+                    it.date
+                }
             ) { review ->
 
-                val smoked = review.entries.count {
-                    it.type == "SMOKED"
-                }
+                val smoked =
+                    review.entries.count {
+                        it.type ==
+                                "SMOKED"
+                    }
 
-                val cravings = review.entries.count {
-                    it.type == "CRAVING"
-                }
+                val cravings =
+                    review.entries.count {
+                        it.type ==
+                                "CRAVING"
+                    }
 
-                val morning = review.entries.count {
-                    it.type == "SMOKED" && it.morning
-                }
+                val morning =
+                    review.entries.count {
+                        it.type ==
+                                "SMOKED" &&
+                                it.morning
+                    }
 
                 AppCard {
+
                     Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(18.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                        modifier =
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(18.dp),
+
+                        horizontalAlignment =
+                            Alignment.CenterHorizontally,
+
+                        verticalArrangement =
+                            Arrangement.spacedBy(10.dp)
                     ) {
+
                         Text(
                             review.date,
-                            modifier = Modifier.fillMaxWidth(),
-                            fontWeight = FontWeight.Bold,
-                            style = MaterialTheme.typography.titleMedium,
-                            textAlign = TextAlign.Center
+                            modifier =
+                                Modifier.fillMaxWidth(),
+                            fontWeight =
+                                FontWeight.Bold,
+                            style =
+                                MaterialTheme.typography.titleMedium,
+                            textAlign =
+                                TextAlign.Center
                         )
 
                         Text(
                             "Cigarettes: $smoked",
-                            modifier = Modifier.fillMaxWidth(),
-                            textAlign = TextAlign.Center
+                            modifier =
+                                Modifier.fillMaxWidth(),
+                            textAlign =
+                                TextAlign.Center
                         )
 
                         Text(
                             "Morning cigarettes: $morning",
-                            modifier = Modifier.fillMaxWidth(),
-                            textAlign = TextAlign.Center
+                            modifier =
+                                Modifier.fillMaxWidth(),
+                            textAlign =
+                                TextAlign.Center
                         )
 
                         Text(
                             "Cravings: $cravings",
-                            modifier = Modifier.fillMaxWidth(),
-                            textAlign = TextAlign.Center
+                            modifier =
+                                Modifier.fillMaxWidth(),
+                            textAlign =
+                                TextAlign.Center
                         )
                     }
                 }
@@ -2698,6 +5079,11 @@ fun DailyReviewsScreen(
         }
     }
 }
+
+
+/* ============================================================
+   PHASE DETAIL SCREEN
+   ============================================================ */
 
 @Composable
 fun PhaseDetailScreen(
@@ -2706,105 +5092,171 @@ fun PhaseDetailScreen(
     onBack: () -> Unit,
     onAction: () -> Unit
 ) {
+
     LazyColumn(
-        modifier = m.fillMaxSize(),
-        contentPadding = PaddingValues(
-            start = 20.dp,
-            end = 20.dp,
-            top = 24.dp,
-            bottom = 24.dp
-        ),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
+        modifier =
+            m.fillMaxSize(),
+
+        contentPadding =
+            PaddingValues(
+                start = 20.dp,
+                end = 20.dp,
+                top = 24.dp,
+                bottom = 24.dp
+            ),
+
+        verticalArrangement =
+            Arrangement.spacedBy(14.dp)
     ) {
 
         item {
+
             Box(
-                modifier = Modifier.fillMaxWidth(),
-                contentAlignment = Alignment.Center
+                modifier =
+                    Modifier.fillMaxWidth(),
+
+                contentAlignment =
+                    Alignment.Center
             ) {
-                TextButton(onClick = onBack) {
+
+                TextButton(
+                    onClick =
+                        onBack
+                ) {
+
                     Text(
                         "‹ Back",
-                        textAlign = TextAlign.Center
+                        textAlign =
+                            TextAlign.Center
                     )
                 }
             }
         }
 
         item {
+
             Column(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(4.dp)
+                modifier =
+                    Modifier.fillMaxWidth(),
+
+                horizontalAlignment =
+                    Alignment.CenterHorizontally,
+
+                verticalArrangement =
+                    Arrangement.spacedBy(4.dp)
             ) {
+
                 Text(
                     "Phase ${phase.phase} • ${phase.name}",
-                    modifier = Modifier.fillMaxWidth(),
-                    style = MaterialTheme.typography.headlineSmall,
-                    fontWeight = FontWeight.Bold,
-                    color = QuitGreen,
-                    textAlign = TextAlign.Center
+                    modifier =
+                        Modifier.fillMaxWidth(),
+                    style =
+                        MaterialTheme.typography.headlineSmall,
+                    fontWeight =
+                        FontWeight.Bold,
+                    color =
+                        QuitGreen,
+                    textAlign =
+                        TextAlign.Center
                 )
 
                 Text(
-                    if (phase.dayStart == phase.dayEnd)
+                    if (
+                        phase.dayStart ==
+                        phase.dayEnd
+                    )
                         "Day ${phase.dayStart}"
                     else
                         "Day ${phase.dayStart} to Day ${phase.dayEnd}",
-                    modifier = Modifier.fillMaxWidth(),
-                    fontWeight = FontWeight.Bold,
-                    textAlign = TextAlign.Center
+
+                    modifier =
+                        Modifier.fillMaxWidth(),
+
+                    fontWeight =
+                        FontWeight.Bold,
+
+                    textAlign =
+                        TextAlign.Center
                 )
             }
         }
 
         item {
+
             AppCard {
+
                 Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(18.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                    modifier =
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(18.dp),
+
+                    horizontalAlignment =
+                        Alignment.CenterHorizontally,
+
+                    verticalArrangement =
+                        Arrangement.spacedBy(10.dp)
                 ) {
+
                     Text(
                         "About this phase",
-                        modifier = Modifier.fillMaxWidth(),
-                        fontWeight = FontWeight.Bold,
-                        textAlign = TextAlign.Center
+                        modifier =
+                            Modifier.fillMaxWidth(),
+                        fontWeight =
+                            FontWeight.Bold,
+                        textAlign =
+                            TextAlign.Center
                     )
 
                     Text(
                         phase.description,
-                        modifier = Modifier.fillMaxWidth(),
-                        color = TextMuted,
-                        textAlign = TextAlign.Center
+                        modifier =
+                            Modifier.fillMaxWidth(),
+                        color =
+                            TextMuted,
+                        textAlign =
+                            TextAlign.Center
                     )
                 }
             }
         }
 
         item {
+
             AppCard {
+
                 Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(18.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                    modifier =
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(18.dp),
+
+                    horizontalAlignment =
+                        Alignment.CenterHorizontally,
+
+                    verticalArrangement =
+                        Arrangement.spacedBy(10.dp)
                 ) {
+
                     Text(
                         "What to focus on",
-                        modifier = Modifier.fillMaxWidth(),
-                        fontWeight = FontWeight.Bold,
-                        textAlign = TextAlign.Center
+                        modifier =
+                            Modifier.fillMaxWidth(),
+                        fontWeight =
+                            FontWeight.Bold,
+                        textAlign =
+                            TextAlign.Center
                     )
 
-                    phase.focus.forEach { focusItem ->
+                    phase.focus.forEach {
+                        focusItem ->
+
                         Text(
                             "• $focusItem",
-                            modifier = Modifier.fillMaxWidth(),
-                            textAlign = TextAlign.Center
+                            modifier =
+                                Modifier.fillMaxWidth(),
+                            textAlign =
+                                TextAlign.Center
                         )
                     }
                 }
@@ -2812,43 +5264,69 @@ fun PhaseDetailScreen(
         }
 
         item {
+
             AppCard {
+
                 Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(18.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                    modifier =
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(18.dp),
+
+                    horizontalAlignment =
+                        Alignment.CenterHorizontally,
+
+                    verticalArrangement =
+                        Arrangement.spacedBy(10.dp)
                 ) {
+
                     Text(
                         "Today's focus",
-                        modifier = Modifier.fillMaxWidth(),
-                        fontWeight = FontWeight.Bold,
-                        textAlign = TextAlign.Center
+                        modifier =
+                            Modifier.fillMaxWidth(),
+                        fontWeight =
+                            FontWeight.Bold,
+                        textAlign =
+                            TextAlign.Center
                     )
 
                     Text(
                         phase.todaysFocus,
-                        modifier = Modifier.fillMaxWidth(),
-                        color = TextMuted,
-                        textAlign = TextAlign.Center
+                        modifier =
+                            Modifier.fillMaxWidth(),
+                        color =
+                            TextMuted,
+                        textAlign =
+                            TextAlign.Center
                     )
                 }
             }
         }
 
         item {
+
             Button(
-                onClick = onAction,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(56.dp),
-                shape = RoundedCornerShape(16.dp)
+
+                onClick =
+                    onAction,
+
+                modifier =
+                    Modifier
+                        .fillMaxWidth()
+                        .height(56.dp),
+
+                shape =
+                    RoundedCornerShape(
+                        16.dp
+                    )
             ) {
+
                 Text(
                     phase.action,
-                    fontWeight = FontWeight.Bold,
-                    textAlign = TextAlign.Center
+                    fontWeight =
+                        FontWeight.Bold,
+                    textAlign =
+                        TextAlign.Center
                 )
             }
         }
