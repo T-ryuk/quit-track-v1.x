@@ -985,6 +985,25 @@ fun QuitTrackApp(
     }
 
     val context = LocalContext.current
+val prefs = context.getSharedPreferences(
+    "quit_track",
+    android.content.Context.MODE_PRIVATE
+)
+
+val objective = prefs.getString(
+    "objective",
+    "Reduce gradually"
+) ?: "Reduce gradually"
+
+val cigarettesPerDay = prefs.getInt(
+    "cigarettesPerDay",
+    8
+)
+
+val morningCigarettes = prefs.getInt(
+    "morningCigarettes",
+    3
+)
 
     BackHandler(
         enabled =
@@ -1297,14 +1316,21 @@ fun QuitTrackApp(
                     }
 
                 "Stats" -> StatsScreen(
-                    Modifier.padding(pad),
-                    entries,
-
-                    onDailyReviews = {
-                        screen =
-                            "DailyReviews"
-                    }
-                )
+    Modifier.padding(pad),
+    entries,
+    onDailyReviews = { screen = "DailyReviews" },
+    onProgress = { screen = "Progress" }
+)
+                "Progress" -> ProgressScreen(
+    Modifier.padding(pad),
+    entries = entries,
+    dailyReviews = dailyReviews,
+    startDate = startDate,
+    objective = objective,
+    cigarettesPerDay = cigarettesPerDay,
+    morningCigarettes = morningCigarettes,
+    onBack = { screen = "Stats" }
+)
 
                 "DailyReviews" ->
                     DailyReviewsScreen(
@@ -2226,7 +2252,8 @@ fun PlanScreen(
 fun StatsScreen(
     m: Modifier,
     entries: List<LogEntry>,
-    onDailyReviews: () -> Unit
+    onDailyReviews: () -> Unit,
+    onProgress: () -> Unit
 ) {
 
     val smoked =
@@ -2417,109 +2444,38 @@ fun StatsScreen(
             }
         }
 
-        item {
-
-            AppCard {
-
-                Column(
-                    modifier =
-                        Modifier
-                            .fillMaxWidth()
-                            .padding(18.dp),
-
-                    horizontalAlignment =
-                        Alignment.CenterHorizontally,
-
-                    verticalArrangement =
-                        Arrangement.spacedBy(12.dp)
-                ) {
-
-                    Text(
-                        "How cigarettes were obtained",
-                        modifier =
-                            Modifier.fillMaxWidth(),
-                        fontWeight =
-                            FontWeight.Bold,
-                        textAlign =
-                            TextAlign.Center
-                    )
-
-                    StatRow(
-                        "Bought",
-                        smoked.count {
-                            it.source == "Bought"
-                        }.toString()
-                    )
-
-                    StatRow(
-                        "Offered",
-                        smoked.count {
-                            it.source == "Offered"
-                        }.toString()
-                    )
-
-                    StatRow(
-                        "Asked for",
-                        smoked.count {
-                            it.source == "Asked for"
-                        }.toString()
-                    )
-
-                    StatRow(
-                        "Other",
-                        smoked.count {
-                            it.source == "Other"
-                        }.toString()
-                    )
-                }
-            }
-        }
+        
 
         item {
+    AppCard(
+        modifier = Modifier.clickable {
+    onProgress()
+}
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(18.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text(
+                "Progress",
+                modifier = Modifier.fillMaxWidth(),
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Center
+            )
 
-            AppCard {
-
-                Column(
-                    modifier =
-                        Modifier
-                            .fillMaxWidth()
-                            .padding(18.dp),
-
-                    horizontalAlignment =
-                        Alignment.CenterHorizontally,
-
-                    verticalArrangement =
-                        Arrangement.spacedBy(8.dp)
-                ) {
-
-                    Text(
-                        "Progress",
-                        modifier =
-                            Modifier.fillMaxWidth(),
-                        fontWeight =
-                            FontWeight.Bold,
-                        textAlign =
-                            TextAlign.Center
-                    )
-
-                    Text(
-                        if (smoked.isEmpty())
-                            "Your tracking journey starts here."
-                        else
-                            "Keep tracking. Patterns become clearer over time.",
-
-                        modifier =
-                            Modifier.fillMaxWidth(),
-
-                        color =
-                            TextMuted,
-
-                        textAlign =
-                            TextAlign.Center
-                    )
-                }
-            }
+            Text(
+                "Analysis of your smoking, cravings and daily progress",
+                modifier = Modifier.fillMaxWidth(),
+                color = TextMuted,
+                style = MaterialTheme.typography.bodySmall,
+                textAlign = TextAlign.Center
+            )
         }
+    }
+}
 
         item {
 
@@ -5331,4 +5287,380 @@ fun PhaseDetailScreen(
             }
         }
     }
+    @Composable
+fun ProgressScreen(
+    m: Modifier,
+    entries: List<LogEntry>,
+    dailyReviews: List<DailyReview>,
+    startDate: Long,
+    objective: String,
+    cigarettesPerDay: Int,
+    morningCigarettes: Int,
+    onBack: () -> Unit
+) {
+    val smoked = entries.filter { it.type == "SMOKED" }
+    val cravings = entries.filter { it.type == "CRAVING" }
+
+    val today = Calendar.getInstance().apply {
+        set(Calendar.HOUR_OF_DAY, 0)
+        set(Calendar.MINUTE, 0)
+        set(Calendar.SECOND, 0)
+        set(Calendar.MILLISECOND, 0)
+    }.timeInMillis
+
+    val currentDay = (((today - startDate) / 86_400_000L).toInt() + 1)
+        .coerceIn(1, 40)
+
+    val daysTracked = dailyReviews.size
+
+    val averageCigarettes =
+        if (daysTracked == 0) 0.0
+        else dailyReviews.map {
+            it.entries.count { entry ->
+                entry.type == "SMOKED"
+            }
+        }.average()
+
+    val averageCraving =
+        if (cravings.isEmpty()) 0.0
+        else cravings.map { it.intensity }.average()
+
+    val morningCigarettes = smoked.count { it.morning }
+
+    val strongCravings = cravings.count {
+        it.intensity >= 8
+    }
+
+    val quitDay = Calendar.getInstance().apply {
+        timeInMillis = startDate
+        add(Calendar.DAY_OF_YEAR, 36)
+    }.timeInMillis
+
+    val daysUntilQuit =
+        ((quitDay - today) / 86_400_000L)
+            .toInt()
+            .coerceAtLeast(0)
+
+    LazyColumn(
+        modifier = m.fillMaxSize(),
+        contentPadding = PaddingValues(
+            start = 20.dp,
+            end = 20.dp,
+            top = 24.dp,
+            bottom = 24.dp
+        ),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+
+        item {
+            Box(
+                modifier = Modifier.fillMaxWidth(),
+                contentAlignment = Alignment.Center
+            ) {
+                TextButton(onClick = onBack) {
+                    Text(
+                        "‹ Back",
+                        textAlign = TextAlign.Center
+                    )
+                }
+            }
+        }
+
+        item {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(5.dp)
+            ) {
+                Text(
+                    "Progress & Analysis",
+                    modifier = Modifier.fillMaxWidth(),
+                    style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = QuitGreen,
+                    textAlign = TextAlign.Center
+                )
+
+                Text(
+                    "Your smoking, cravings and daily progress",
+                    modifier = Modifier.fillMaxWidth(),
+                    color = TextMuted,
+                    textAlign = TextAlign.Center
+                )
+            }
+        }
+
+        item {
+            AppCard {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(18.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text(
+                        "Overall progress",
+                        modifier = Modifier.fillMaxWidth(),
+                        fontWeight = FontWeight.Bold,
+                        textAlign = TextAlign.Center
+                    )
+
+                    StatRow(
+                        "Current program day",
+                        "Day $currentDay of 40"
+                    )
+
+                    StatRow(
+                        "Daily reviews completed",
+                        daysTracked.toString()
+                    )
+
+                    StatRow(
+                        "Cigarettes logged",
+                        smoked.size.toString()
+                    )
+
+                    StatRow(
+                        "Cravings logged",
+                        cravings.size.toString()
+                    )
+                }
+            }
+        }
+
+        item {
+            AppCard {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(18.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text(
+                        "Objective progress",
+                        modifier = Modifier.fillMaxWidth(),
+                        fontWeight = FontWeight.Bold,
+                        textAlign = TextAlign.Center
+                    )
+
+                    Text(
+                        "Quit Day",
+                        modifier = Modifier.fillMaxWidth(),
+                        color = TextMuted,
+                        textAlign = TextAlign.Center
+                    )
+
+                    Text(
+                        fmtDate(quitDay),
+                        modifier = Modifier.fillMaxWidth(),
+                        style = MaterialTheme.typography.headlineMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = QuitGreen,
+                        textAlign = TextAlign.Center
+                    )
+
+                    Text(
+                        when {
+                            currentDay < 37 ->
+                                "$daysUntilQuit days until your planned quit day."
+
+                            currentDay == 37 ->
+                                "Today is your planned quit day."
+
+                            else ->
+                                "Your planned quit day has passed."
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        color = TextMuted,
+                        textAlign = TextAlign.Center
+                    )
+                }
+            }
+        }
+
+        item {
+            AppCard {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(18.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text(
+                        "Smoking analysis",
+                        modifier = Modifier.fillMaxWidth(),
+                        fontWeight = FontWeight.Bold,
+                        textAlign = TextAlign.Center
+                    )
+
+                    StatRow(
+                        "Average cigarettes per reviewed day",
+                        "%.1f".format(averageCigarettes)
+                    )
+
+                    StatRow(
+                        "Morning cigarettes",
+                        morningCigarettes.toString()
+                    )
+
+                    Text(
+                        if (smoked.isEmpty())
+                            "No cigarettes have been logged yet."
+                        else
+                            "Your smoking data will become more useful as more daily reviews are recorded.",
+                        modifier = Modifier.fillMaxWidth(),
+                        color = TextMuted,
+                        style = MaterialTheme.typography.bodySmall,
+                        textAlign = TextAlign.Center
+                    )
+                }
+            }
+        }
+
+        item {
+            AppCard {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(18.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text(
+                        "Craving analysis",
+                        modifier = Modifier.fillMaxWidth(),
+                        fontWeight = FontWeight.Bold,
+                        textAlign = TextAlign.Center
+                    )
+
+                    StatRow(
+                        "Average craving intensity",
+                        if (cravings.isEmpty())
+                            "No data"
+                        else
+                            "%.1f/10".format(averageCraving)
+                    )
+
+                    StatRow(
+                        "Strong cravings (8/10 or higher)",
+                        strongCravings.toString()
+                    )
+
+                    Text(
+                        if (cravings.isEmpty())
+                            "No cravings have been logged yet."
+                        else
+                            "Keep recording the context of cravings so Quit Track can identify your strongest patterns.",
+                        modifier = Modifier.fillMaxWidth(),
+                        color = TextMuted,
+                        style = MaterialTheme.typography.bodySmall,
+                        textAlign = TextAlign.Center
+                    )
+                }
+            }
+        }
+
+        item {
+            AppCard {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(18.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text(
+                        "Context analysis",
+                        modifier = Modifier.fillMaxWidth(),
+                        fontWeight = FontWeight.Bold,
+                        textAlign = TextAlign.Center
+                    )
+
+                    val smokingContexts = smoked
+                        .filter { it.context.isNotBlank() }
+                        .groupingBy { it.context }
+                        .eachCount()
+
+                    val cravingContexts = cravings
+                        .filter { it.context.isNotBlank() }
+                        .groupingBy { it.context }
+                        .eachCount()
+
+                    val strongestSmokingContext =
+                        smokingContexts.maxByOrNull { it.value }
+
+                    val strongestCravingContext =
+                        cravingContexts.maxByOrNull { it.value }
+
+                    if (strongestSmokingContext == null &&
+                        strongestCravingContext == null
+                    ) {
+                        Text(
+                            "Context patterns will appear here as you record more cigarettes and cravings.",
+                            modifier = Modifier.fillMaxWidth(),
+                            color = TextMuted,
+                            textAlign = TextAlign.Center
+                        )
+                    } else {
+
+                        strongestSmokingContext?.let {
+                            StatRow(
+                                "Most frequent smoking context",
+                                "${it.key} (${it.value})"
+                            )
+                        }
+
+                        strongestCravingContext?.let {
+                            StatRow(
+                                "Most frequent craving context",
+                                "${it.key} (${it.value})"
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        item {
+            AppCard {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(18.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text(
+                        "What your data shows",
+                        modifier = Modifier.fillMaxWidth(),
+                        fontWeight = FontWeight.Bold,
+                        textAlign = TextAlign.Center
+                    )
+
+                    Text(
+                        when {
+                            dailyReviews.isEmpty() ->
+                                "Your daily review analysis will become available once reviews have been recorded."
+
+                            dailyReviews.size < 3 ->
+                                "Keep recording daily reviews. A few more days of data will make the comparisons more meaningful."
+
+                            smoked.isEmpty() && cravings.isEmpty() ->
+                                "There is not enough activity data yet to identify patterns."
+
+                            else ->
+                                "Your data is beginning to show your smoking and craving patterns. Keep logging contexts so these patterns become clearer over time."
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        color = TextMuted,
+                        textAlign = TextAlign.Center
+                    )
+                }
+            }
+        }
+    }
+}
 }
