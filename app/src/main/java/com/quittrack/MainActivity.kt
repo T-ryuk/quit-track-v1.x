@@ -2099,46 +2099,67 @@ Card(
 }
 
                 if (showContextOptions) {
-    listOf(
-        "After waking",
-        "Coffee",
-        "Meal",
-        "Work",
-        "Stress",
-        "Boredom",
-        "Social",
-        "Alcohol",
-        "Routine/Habit"
-    ).forEach { option ->
-        Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clickable {
-                    context = option
-                    showContextOptions = false
-                },
-            shape = RoundedCornerShape(14.dp),
-            colors = CardDefaults.cardColors(
-                containerColor =
-                    if (context == option)
-                        QuitGreen.copy(alpha = 0.15f)
-                    else
-                        MaterialTheme.colorScheme.surfaceVariant
+    AlertDialog(
+        onDismissRequest = {
+            showContextOptions = false
+        },
+        title = {
+            Text(
+                "Context",
+                modifier = Modifier.fillMaxWidth(),
+                textAlign = TextAlign.Center
             )
-        ) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 14.dp),
-                contentAlignment = Alignment.Center
+        },
+        text = {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                Text(
-                    option,
-                    textAlign = TextAlign.Center
-                )
+                listOf(
+                    "After waking",
+                    "Coffee",
+                    "Meal",
+                    "Work",
+                    "Stress",
+                    "Boredom",
+                    "Social",
+                    "Alcohol",
+                    "Routine/Habit"
+                ).forEach { option ->
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                context = option
+                                showContextOptions = false
+                            },
+                        shape = RoundedCornerShape(14.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor =
+                                if (context == option)
+                                    QuitGreen.copy(alpha = 0.15f)
+                                else
+                                    MaterialTheme.colorScheme.surfaceVariant
+                        )
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 14.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                option,
+                                textAlign = TextAlign.Center
+                            )
+                        }
+                    }
+                }
             }
-        }
-    }
+        },
+        confirmButton = {}
+    )
 }
 
                 Text(
