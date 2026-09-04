@@ -2202,6 +2202,7 @@ fun CravingDialog(
     var intensity by remember { mutableIntStateOf(5) }
     var context by remember { mutableStateOf("") }
     var morning by remember { mutableStateOf(false) }
+    var showContextDialog by remember { mutableStateOf(false) }
 
     AlertDialog(
         onDismissRequest = dismiss,
@@ -2241,11 +2242,17 @@ fun CravingDialog(
                     Text("No")
                 }
 
-                OutlinedTextField(
-                    value = context,
-                    onValueChange = { context = it },
-                    label = { Text("Situation/context") }
-                )
+                OutlinedButton(
+    onClick = { showContextDialog = true },
+    modifier = Modifier.fillMaxWidth()
+) {
+    Text(
+        if (context.isEmpty())
+            "Situation/context"
+        else
+            context
+    )
+}
             }
         },
         confirmButton = {
@@ -2263,6 +2270,47 @@ fun CravingDialog(
             }
         }
     )
+    if (showContextDialog) {
+    AlertDialog(
+        onDismissRequest = { showContextDialog = false },
+        title = {
+            Text("Situation/context")
+        },
+        text = {
+            Column(
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                listOf(
+                    "After waking",
+                    "With coffee",
+                    "After a meal",
+                    "During work",
+                    "Stress",
+                    "Boredom",
+                    "Social situation",
+                    "Other"
+                ).forEach { option ->
+                    TextButton(
+                        onClick = {
+                            context = option
+                            showContextDialog = false
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(option)
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { showContextDialog = false }
+            ) {
+                Text("Cancel")
+            }
+        }
+    )
+}
 }
 
 fun phaseForDay(day: Int): Int {
