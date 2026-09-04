@@ -5287,6 +5287,7 @@ fun PhaseDetailScreen(
             }
         }
     }
+}
     @Composable
 fun ProgressScreen(
     m: Modifier,
@@ -5325,7 +5326,7 @@ fun ProgressScreen(
         if (cravings.isEmpty()) 0.0
         else cravings.map { it.intensity }.average()
 
-    val morningCigarettes = smoked.count { it.morning }
+    val loggedMorningCigarettes = smoked.count { it.morning }
 
     val strongCravings = cravings.count {
         it.intensity >= 8
@@ -5502,9 +5503,9 @@ fun ProgressScreen(
                     )
 
                     StatRow(
-                        "Morning cigarettes",
-                        morningCigarettes.toString()
-                    )
+    "Morning cigarettes",
+    loggedMorningCigarettes.toString()
+)
 
                     Text(
                         if (smoked.isEmpty())
