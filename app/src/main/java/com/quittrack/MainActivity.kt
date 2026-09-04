@@ -2222,36 +2222,74 @@ fun CravingDialog(
 
                 Text("Is this a morning craving?")
 
-                Row(
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    RadioButton(
-                        selected = morning,
-                        onClick = { morning = true }
-                    )
-                    Text("Yes")
-                }
-
-                Row(
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    RadioButton(
-                        selected = !morning,
-                        onClick = { morning = false }
-                    )
-                    Text("No")
-                }
-
-                OutlinedButton(
-    onClick = { showContextDialog = true },
-    modifier = Modifier.fillMaxWidth()
-) {
-    Text(
-        if (context.isEmpty())
-            "Situation/context"
-        else
-            context
+                Card(
+    modifier = Modifier
+        .fillMaxWidth()
+        .clickable { morning = true },
+    shape = RoundedCornerShape(14.dp),
+    colors = CardDefaults.cardColors(
+        containerColor =
+            if (morning)
+                QuitGreen.copy(alpha = 0.15f)
+            else
+                MaterialTheme.colorScheme.surfaceVariant
     )
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 12.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text("Yes")
+    }
+}
+
+Card(
+    modifier = Modifier
+        .fillMaxWidth()
+        .clickable { morning = false },
+    shape = RoundedCornerShape(14.dp),
+    colors = CardDefaults.cardColors(
+        containerColor =
+            if (!morning)
+                QuitGreen.copy(alpha = 0.15f)
+            else
+                MaterialTheme.colorScheme.surfaceVariant
+    )
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 12.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text("No")
+    }
+}
+
+                Card(
+    modifier = Modifier
+        .fillMaxWidth()
+        .clickable { showContextDialog = true },
+    shape = RoundedCornerShape(14.dp),
+    colors = CardDefaults.cardColors(
+        containerColor = MaterialTheme.colorScheme.surfaceVariant
+    )
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 12.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            if (context.isEmpty())
+                "Context ▼"
+            else
+                context
+        )
+    }
 }
             }
         },
@@ -2274,41 +2312,59 @@ fun CravingDialog(
     AlertDialog(
         onDismissRequest = { showContextDialog = false },
         title = {
-            Text("Situation/context")
+            Box(
+                modifier = Modifier.fillMaxWidth(),
+                contentAlignment = Alignment.Center
+            ) {
+                Text("Context")
+            }
         },
         text = {
             Column(
+                modifier = Modifier.fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 listOf(
                     "After waking",
-                    "With coffee",
-                    "After a meal",
-                    "During work",
+                    "Coffee",
+                    "Meal",
+                    "Work",
                     "Stress",
                     "Boredom",
-                    "Social situation",
-                    "Other"
+                    "Social",
+                    "Alcohol",
+                    "Routine/Habit"
                 ).forEach { option ->
-                    TextButton(
-                        onClick = {
-                            context = option
-                            showContextDialog = false
-                        },
-                        modifier = Modifier.fillMaxWidth()
+
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                context = option
+                                showContextDialog = false
+                            },
+                        shape = RoundedCornerShape(14.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor =
+                                if (context == option)
+                                    QuitGreen.copy(alpha = 0.15f)
+                                else
+                                    MaterialTheme.colorScheme.surfaceVariant
+                        )
                     ) {
-                        Text(option)
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 10.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(option)
+                        }
                     }
                 }
             }
         },
-        confirmButton = {
-            TextButton(
-                onClick = { showContextDialog = false }
-            ) {
-                Text("Cancel")
-            }
-        }
+        confirmButton = {}
     )
 }
 }
