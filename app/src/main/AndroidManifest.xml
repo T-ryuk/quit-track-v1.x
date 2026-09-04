@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <application android:theme="@style/Theme.QuitTrack" android:label="Quit Track" android:allowBackup="true" android:supportsRtl="true" android:icon="@drawable/quittrackicon">
         <activity android:name=".MainActivity" android:exported="true">
             <intent-filter>
@@ -7,5 +9,16 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+        <receiver
+    android:name=".DailyReviewAlarmReceiver"
+    android:exported="false" />
+
+<receiver
+    android:name=".BootReceiver"
+    android:exported="false">
+    <intent-filter>
+        <action android:name="android.intent.action.BOOT_COMPLETED" />
+    </intent-filter>
+</receiver>
     </application>
 </manifest>
