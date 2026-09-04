@@ -1976,6 +1976,7 @@ fun SmokeDialog(
 ) {
     var source by remember { mutableStateOf("Bought") }
     var context by remember { mutableStateOf("") }
+    var showContextOptions by remember { mutableStateOf(false) }
     var intensity by remember { mutableIntStateOf(0) }
     var morning by remember { mutableStateOf(false) }
 
@@ -1988,47 +1989,157 @@ fun SmokeDialog(
             ) {
                 Text("How did you get it?")
 
-                listOf("Bought", "Offered", "Asked for", "Other").forEach {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        RadioButton(
-                            selected = source == it,
-                            onClick = { source = it }
-                        )
-                        Text(it)
-                    }
+                listOf("Bought", "Offered", "Asked for").forEach {
+                    Card(
+    modifier = Modifier
+        .fillMaxWidth()
+        .clickable { source = it },
+    colors = CardDefaults.cardColors(
+        containerColor =
+            if (source == it)
+                QuitGreen.copy(alpha = 0.15f)
+            else
+                MaterialTheme.colorScheme.surfaceVariant
+    ),
+    shape = RoundedCornerShape(14.dp)
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 16.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            it,
+            textAlign = TextAlign.Center
+        )
+    }
+}
                 }
 
                 HorizontalDivider()
 
                 Text("Was this a morning cigarette?")
 
-                Row(
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    RadioButton(
-                        selected = morning,
-                        onClick = { morning = true }
-                    )
-                    Text("Yes")
-                }
+                Card(
+    modifier = Modifier
+        .fillMaxWidth()
+        .clickable { morning = true },
+    colors = CardDefaults.cardColors(
+        containerColor =
+            if (morning)
+                QuitGreen.copy(alpha = 0.15f)
+            else
+                MaterialTheme.colorScheme.surfaceVariant
+    ),
+    shape = RoundedCornerShape(14.dp)
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 16.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            "Yes",
+            textAlign = TextAlign.Center
+        )
+    }
+}
 
-                Row(
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    RadioButton(
-                        selected = !morning,
-                        onClick = { morning = false }
-                    )
-                    Text("No")
-                }
+Card(
+    modifier = Modifier
+        .fillMaxWidth()
+        .clickable { morning = false },
+    colors = CardDefaults.cardColors(
+        containerColor =
+            if (!morning)
+                QuitGreen.copy(alpha = 0.15f)
+            else
+                MaterialTheme.colorScheme.surfaceVariant
+    ),
+    shape = RoundedCornerShape(14.dp)
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 16.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            "No",
+            textAlign = TextAlign.Center
+        )
+    }
+}
 
-                OutlinedTextField(
-                    value = context,
-                    onValueChange = { context = it },
-                    label = { Text("Context (optional)") }
+                Card(
+    modifier = Modifier
+        .fillMaxWidth()
+        .clickable { showContextOptions = !showContextOptions },
+    shape = RoundedCornerShape(14.dp),
+    colors = CardDefaults.cardColors(
+        containerColor = MaterialTheme.colorScheme.surfaceVariant
+    )
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 16.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+    if (context.isEmpty())
+        "Context ▼"
+    else
+        "$context ▼",
+    textAlign = TextAlign.Center
+)
+    }
+}
+
+                if (showContextOptions) {
+    listOf(
+        "After waking",
+        "Coffee",
+        "Meal",
+        "Work",
+        "Stress",
+        "Boredom",
+        "Social",
+        "Alcohol",
+        "Routine/Habit"
+    ).forEach { option ->
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable {
+                    context = option
+                    showContextOptions = false
+                },
+            shape = RoundedCornerShape(14.dp),
+            colors = CardDefaults.cardColors(
+                containerColor =
+                    if (context == option)
+                        QuitGreen.copy(alpha = 0.15f)
+                    else
+                        MaterialTheme.colorScheme.surfaceVariant
+            )
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 14.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    option,
+                    textAlign = TextAlign.Center
                 )
+            }
+        }
+    }
+}
 
                 Text(
                     "Craving: ${
