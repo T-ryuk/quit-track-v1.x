@@ -910,13 +910,6 @@ fun ActionCard(
                 style = MaterialTheme.typography.bodySmall,
                 textAlign = TextAlign.Center
             )
-
-            Text(
-                "›",
-                fontSize = 28.sp,
-                color = TextMuted,
-                textAlign = TextAlign.Center
-            )
         }
     }
 }
@@ -1056,14 +1049,6 @@ fun PlanScreen(
                         style = MaterialTheme.typography.bodySmall,
                         textAlign = TextAlign.Center
                     )
-
-                    Text(
-                        "›",
-                        modifier = Modifier.fillMaxWidth(),
-                        fontSize = 28.sp,
-                        color = TextMuted,
-                        textAlign = TextAlign.Center
-                    )
                 }
             }
         }
@@ -1078,7 +1063,7 @@ fun PlanScreen(
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     Text(
-                        "🌱  Every day is a step forward.",
+                        "Every day is a step forward",
                         modifier = Modifier.fillMaxWidth(),
                         fontWeight = FontWeight.Bold,
                         color = QuitGreen,
@@ -1544,38 +1529,46 @@ fun SettingsScreen(
                         )
 
                         OutlinedTextField(
-                            value = cigarettesPerDay,
-                            onValueChange = {
-                                if (it.length <= 3 && it.all { c -> c.isDigit() }) {
-                                    cigarettesPerDay = it
-                                }
-                            },
-                            modifier = Modifier.fillMaxWidth(),
-                            singleLine = true,
-                            label = {
-                                Text(
-                                    "Cigarettes per day",
-                                    textAlign = TextAlign.Center
-                                )
-                            }
-                        )
+    value = cigarettesPerDay,
+    onValueChange = {
+        if (it.length <= 3 && it.all { c -> c.isDigit() }) {
+            cigarettesPerDay = it
+        }
+    },
+    modifier = Modifier.fillMaxWidth(),
+    singleLine = true,
+    textStyle = LocalTextStyle.current.copy(
+        textAlign = TextAlign.Center
+    ),
+    label = {
+        Text(
+            "Cigarettes per day",
+            modifier = Modifier.fillMaxWidth(),
+            textAlign = TextAlign.Center
+        )
+    }
+)
 
                         OutlinedTextField(
-                            value = morningCigarettes,
-                            onValueChange = {
-                                if (it.length <= 2 && it.all { c -> c.isDigit() }) {
-                                    morningCigarettes = it
-                                }
-                            },
-                            modifier = Modifier.fillMaxWidth(),
-                            singleLine = true,
-                            label = {
-                                Text(
-                                    "Morning cigarettes",
-                                    textAlign = TextAlign.Center
-                                )
-                            }
-                        )
+    value = morningCigarettes,
+    onValueChange = {
+        if (it.length <= 2 && it.all { c -> c.isDigit() }) {
+            morningCigarettes = it
+        }
+    },
+    modifier = Modifier.fillMaxWidth(),
+    singleLine = true,
+    textStyle = LocalTextStyle.current.copy(
+        textAlign = TextAlign.Center
+    ),
+    label = {
+        Text(
+            "Morning cigarettes",
+            modifier = Modifier.fillMaxWidth(),
+            textAlign = TextAlign.Center
+        )
+    }
+)
 
                         Button(
                             onClick = {
@@ -1836,14 +1829,6 @@ fun SettingsRow(
             modifier = Modifier.fillMaxWidth(),
             color = TextMuted,
             style = MaterialTheme.typography.bodySmall,
-            textAlign = TextAlign.Center
-        )
-
-        Text(
-            "›",
-            modifier = Modifier.fillMaxWidth(),
-            fontSize = 26.sp,
-            color = TextMuted,
             textAlign = TextAlign.Center
         )
     }
