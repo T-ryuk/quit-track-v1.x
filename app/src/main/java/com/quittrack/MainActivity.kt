@@ -2135,20 +2135,13 @@ fun CravingDialog(
 
 fun phaseForDay(day: Int): Int {
     return when {
-        day <= 3 -> 1
-        day <= 6 -> 2
-        day <= 9 -> 3
-        day <= 12 -> 4
-        day <= 15 -> 5
-        day <= 18 -> 6
-        day <= 21 -> 7
-        day <= 24 -> 8
-        day <= 27 -> 9
-        day <= 30 -> 10
-        day <= 33 -> 11
-        day <= 36 -> 12
-        day == 37 -> 13
-        else -> 14
+        day == 1 -> 1
+        day == 2 -> 2
+        day == 3 -> 3
+        day in 4..36 -> 4
+        day == 37 -> 5
+        day in 38..40 -> 6
+        else -> 6
     }
 }
 
