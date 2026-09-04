@@ -1028,6 +1028,14 @@ val morningCigarettes = prefs.getInt(
             screen == "DailyReviews" ->
                 screen = "Stats"
 
+            screen == "Progress" ->
+                screen = "Stats"
+
+            screen == "PhaseDetail" -> {
+                selectedPhase = null
+                    screen = "Plan"
+                }
+
             else ->
                 screen = "Today"
         }
