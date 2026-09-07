@@ -5784,4 +5784,3 @@ fun ProgressScreen(
         }
     }
 }
-}
