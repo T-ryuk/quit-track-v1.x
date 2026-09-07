@@ -5320,25 +5320,126 @@ fun ProgressScreen(
     val currentDay = (((today - startDate) / 86_400_000L).toInt() + 1)
         .coerceIn(1, 40)
 
-    val daysTracked = dailyReviews.size
+    val reviewedDays = dailyReviews.sortedBy { it.date }
+    val daysTracked = reviewedDays.size
+
+    /*
+     * ------------------------------------------------------------
+     * SMOKING ANALYSIS
+     * ------------------------------------------------------------
+     */
+
+    val cigarettesPerReviewedDay = reviewedDays.map { review ->
+        review.entries.count { it.type == "SMOKED" }
+    }
 
     val averageCigarettes =
-        if (daysTracked == 0) 0.0
-        else dailyReviews.map {
-            it.entries.count { entry ->
-                entry.type == "SMOKED"
-            }
-        }.average()
+        if (cigarettesPerReviewedDay.isEmpty()) {
+            0.0
+        } else {
+            cigarettesPerReviewedDay.average()
+        }
+
+    val highestCigarettes =
+        cigarettesPerReviewedDay.maxOrNull() ?: 0
+
+    val lowestCigarettes =
+        cigarettesPerReviewedDay.minOrNull() ?: 0
+
+    val morningPerReviewedDay = reviewedDays.map { review ->
+        review.entries.count {
+            it.type == "SMOKED" && it.morning
+        }
+    }
+
+    val averageMorningCigarettes =
+        if (morningPerReviewedDay.isEmpty()) {
+            0.0
+        } else {
+            morningPerReviewedDay.average()
+        }
+
+    /*
+     * ------------------------------------------------------------
+     * CRAVING ANALYSIS
+     * ------------------------------------------------------------
+     */
 
     val averageCraving =
-        if (cravings.isEmpty()) 0.0
-        else cravings.map { it.intensity }.average()
+        if (cravings.isEmpty()) {
+            0.0
+        } else {
+            cravings.map { it.intensity }.average()
+        }
 
-    val loggedMorningCigarettes = smoked.count { it.morning }
+    val highestCraving =
+        cravings.maxOfOrNull { it.intensity } ?: 0
 
     val strongCravings = cravings.count {
         it.intensity >= 8
     }
+
+    /*
+     * ------------------------------------------------------------
+     * CONTEXT ANALYSIS
+     * ------------------------------------------------------------
+     */
+
+    val smokingContexts = smoked
+        .filter { it.context.isNotBlank() }
+        .groupingBy { it.context }
+        .eachCount()
+
+    val cravingContexts = cravings
+        .filter { it.context.isNotBlank() }
+        .groupingBy { it.context }
+        .eachCount()
+
+    val strongestSmokingContext =
+        smokingContexts.maxByOrNull { it.value }
+
+    val strongestCravingContext =
+        cravingContexts.maxByOrNull { it.value }
+
+    /*
+     * ------------------------------------------------------------
+     * TREND ANALYSIS
+     *
+     * We only compare periods once there are enough reviews
+     * to make the comparison meaningful.
+     * ------------------------------------------------------------
+     */
+
+    val trendMessage =
+        when {
+            daysTracked < 6 ->
+                "Keep recording daily reviews. Once you have at least 6 reviewed days, Quit Track can compare your earlier and more recent smoking patterns."
+
+            else -> {
+                val firstPeriod = cigarettesPerReviewedDay.take(3)
+                val recentPeriod = cigarettesPerReviewedDay.takeLast(3)
+
+                val firstAverage = firstPeriod.average()
+                val recentAverage = recentPeriod.average()
+
+                when {
+                    recentAverage < firstAverage ->
+                        "Your recent average is lower than your first three reviewed days. Your smoking is moving in the right direction."
+
+                    recentAverage > firstAverage ->
+                        "Your recent average is higher than your first three reviewed days. Keep logging consistently so the pattern can be understood."
+
+                    else ->
+                        "Your recent average is similar to your first three reviewed days. More data will show whether the pattern changes."
+                }
+            }
+        }
+
+    /*
+     * ------------------------------------------------------------
+     * QUIT DAY
+     * ------------------------------------------------------------
+     */
 
     val quitDay = Calendar.getInstance().apply {
         timeInMillis = startDate
@@ -5349,6 +5450,12 @@ fun ProgressScreen(
         ((quitDay - today) / 86_400_000L)
             .toInt()
             .coerceAtLeast(0)
+
+    /*
+     * ------------------------------------------------------------
+     * SCREEN
+     * ------------------------------------------------------------
+     */
 
     LazyColumn(
         modifier = m.fillMaxSize(),
@@ -5399,6 +5506,10 @@ fun ProgressScreen(
             }
         }
 
+        /*
+         * OVERALL PROGRESS
+         */
+
         item {
             AppCard {
                 Column(
@@ -5437,6 +5548,10 @@ fun ProgressScreen(
                 }
             }
         }
+
+        /*
+         * OBJECTIVE PROGRESS
+         */
 
         item {
             AppCard {
@@ -5489,6 +5604,10 @@ fun ProgressScreen(
             }
         }
 
+        /*
+         * SMOKING ANALYSIS
+         */
+
         item {
             AppCard {
                 Column(
@@ -5505,29 +5624,41 @@ fun ProgressScreen(
                         textAlign = TextAlign.Center
                     )
 
-                    StatRow(
-                        "Average cigarettes per reviewed day",
-                        "%.1f".format(averageCigarettes)
-                    )
+                    if (daysTracked == 0) {
+                        Text(
+                            "Your smoking analysis will appear once your first daily review has been recorded.",
+                            modifier = Modifier.fillMaxWidth(),
+                            color = TextMuted,
+                            textAlign = TextAlign.Center
+                        )
+                    } else {
+                        StatRow(
+                            "Average cigarettes per reviewed day",
+                            "%.1f".format(averageCigarettes)
+                        )
 
-                    StatRow(
-    "Morning cigarettes",
-    loggedMorningCigarettes.toString()
-)
+                        StatRow(
+                            "Highest cigarettes in one reviewed day",
+                            highestCigarettes.toString()
+                        )
 
-                    Text(
-                        if (smoked.isEmpty())
-                            "No cigarettes have been logged yet."
-                        else
-                            "Your smoking data will become more useful as more daily reviews are recorded.",
-                        modifier = Modifier.fillMaxWidth(),
-                        color = TextMuted,
-                        style = MaterialTheme.typography.bodySmall,
-                        textAlign = TextAlign.Center
-                    )
+                        StatRow(
+                            "Lowest cigarettes in one reviewed day",
+                            lowestCigarettes.toString()
+                        )
+
+                        StatRow(
+                            "Average morning cigarettes per reviewed day",
+                            "%.1f".format(averageMorningCigarettes)
+                        )
+                    }
                 }
             }
         }
+
+        /*
+         * CRAVING ANALYSIS
+         */
 
         item {
             AppCard {
@@ -5545,32 +5676,36 @@ fun ProgressScreen(
                         textAlign = TextAlign.Center
                     )
 
-                    StatRow(
-                        "Average craving intensity",
-                        if (cravings.isEmpty())
-                            "No data"
-                        else
+                    if (cravings.isEmpty()) {
+                        Text(
+                            "No cravings have been logged yet.",
+                            modifier = Modifier.fillMaxWidth(),
+                            color = TextMuted,
+                            textAlign = TextAlign.Center
+                        )
+                    } else {
+                        StatRow(
+                            "Average craving intensity",
                             "%.1f/10".format(averageCraving)
-                    )
+                        )
 
-                    StatRow(
-                        "Strong cravings (8/10 or higher)",
-                        strongCravings.toString()
-                    )
+                        StatRow(
+                            "Highest craving intensity",
+                            "$highestCraving/10"
+                        )
 
-                    Text(
-                        if (cravings.isEmpty())
-                            "No cravings have been logged yet."
-                        else
-                            "Keep recording the context of cravings so Quit Track can identify your strongest patterns.",
-                        modifier = Modifier.fillMaxWidth(),
-                        color = TextMuted,
-                        style = MaterialTheme.typography.bodySmall,
-                        textAlign = TextAlign.Center
-                    )
+                        StatRow(
+                            "Strong cravings (8/10 or higher)",
+                            strongCravings.toString()
+                        )
+                    }
                 }
             }
         }
+
+        /*
+         * CONTEXT ANALYSIS
+         */
 
         item {
             AppCard {
@@ -5588,23 +5723,8 @@ fun ProgressScreen(
                         textAlign = TextAlign.Center
                     )
 
-                    val smokingContexts = smoked
-                        .filter { it.context.isNotBlank() }
-                        .groupingBy { it.context }
-                        .eachCount()
-
-                    val cravingContexts = cravings
-                        .filter { it.context.isNotBlank() }
-                        .groupingBy { it.context }
-                        .eachCount()
-
-                    val strongestSmokingContext =
-                        smokingContexts.maxByOrNull { it.value }
-
-                    val strongestCravingContext =
-                        cravingContexts.maxByOrNull { it.value }
-
-                    if (strongestSmokingContext == null &&
+                    if (
+                        strongestSmokingContext == null &&
                         strongestCravingContext == null
                     ) {
                         Text(
@@ -5633,6 +5753,10 @@ fun ProgressScreen(
             }
         }
 
+        /*
+         * WHAT YOUR DATA SHOWS
+         */
+
         item {
             AppCard {
                 Column(
@@ -5650,19 +5774,7 @@ fun ProgressScreen(
                     )
 
                     Text(
-                        when {
-                            dailyReviews.isEmpty() ->
-                                "Your daily review analysis will become available once reviews have been recorded."
-
-                            dailyReviews.size < 3 ->
-                                "Keep recording daily reviews. A few more days of data will make the comparisons more meaningful."
-
-                            smoked.isEmpty() && cravings.isEmpty() ->
-                                "There is not enough activity data yet to identify patterns."
-
-                            else ->
-                                "Your data is beginning to show your smoking and craving patterns. Keep logging contexts so these patterns become clearer over time."
-                        },
+                        trendMessage,
                         modifier = Modifier.fillMaxWidth(),
                         color = TextMuted,
                         textAlign = TextAlign.Center
@@ -5671,4 +5783,5 @@ fun ProgressScreen(
             }
         }
     }
+}
 }
