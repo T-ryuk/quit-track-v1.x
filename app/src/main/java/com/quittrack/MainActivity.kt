@@ -40,6 +40,15 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.*
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.ExperimentalAnimationApi
+import androidx.compose.animation.togetherWith
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 
 data class LogEntry(
     val type: String,
@@ -1102,6 +1111,9 @@ val morningCigarettes = prefs.getInt(
             it.type == "CRAVING"
         }
 
+    val mainScreens = listOf("Today", "Plan", "Stats", "Settings")
+    val currentScreenIndex = mainScreens.indexOf(screen)
+
     QuitTrackTheme {
 
         Scaffold(
@@ -1150,7 +1162,46 @@ val morningCigarettes = prefs.getInt(
             }
         ) { pad ->
 
-            when (screen) {
+            AnimatedContent(
+    targetState = screen,
+    modifier = Modifier.pointerInput(screen) {
+        var totalDrag = 0f
+
+        detectHorizontalDragGestures(
+            onHorizontalDrag = { _, dragAmount ->
+                totalDrag += dragAmount
+            },
+            onDragEnd = {
+                when {
+                    totalDrag < -100 && currentScreenIndex < mainScreens.lastIndex ->
+                        screen = mainScreens[currentScreenIndex + 1]
+
+                    totalDrag > 100 && currentScreenIndex > 0 ->
+                        screen = mainScreens[currentScreenIndex - 1]
+                }
+
+                totalDrag = 0f
+            }
+        )
+    },
+    transitionSpec = {
+        val fromIndex = mainScreens.indexOf(initialState)
+        val toIndex = mainScreens.indexOf(targetState)
+
+        if (fromIndex != -1 && toIndex != -1 && toIndex > fromIndex) {
+            slideInHorizontally { width -> width } togetherWith
+                slideOutHorizontally { width -> -width }
+        } else if (fromIndex != -1 && toIndex != -1 && toIndex < fromIndex) {
+            slideInHorizontally { width -> -width } togetherWith
+                slideOutHorizontally { width -> width }
+        } else {
+            EnterTransition.None togetherWith ExitTransition.None
+        }
+    },
+    label = "screen_transition"
+) { targetScreen ->
+
+    when (targetScreen) {
 
                 "Today" -> TodayScreen(
                     Modifier.padding(pad),
